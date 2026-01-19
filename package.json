@@ -1,0 +1,44 @@
+{
+  "name": "rudiment-campaign-monitor",
+  "version": "1.0.0",
+  "description": "Campaign performance monitoring system for Rudiment GTM Engineering",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "monitor": "tsx src/index.ts",
+    "dashboard": "tsx src/dashboard-server.ts",
+    "test": "tsx src/test-slack.ts",
+    "test-apis": "tsx src/test-apis.ts",
+    "test-apis-all": "tsx src/test-apis-all.ts",
+    "report:client": "tsx src/report-client.ts",
+    "report:slack": "tsx src/report-to-slack.ts",
+    "lambda:zip": "npm run build && rm -rf lambda && mkdir -p lambda && cp package.json package-lock.json lambda/ && cp -R dist lambda/dist && npm ci --omit=dev --prefix lambda && cd lambda && zip -qr ../lambda.zip .",
+    "test-emailbison": "tsx src/test-emailbison.ts"
+  },
+  "keywords": [
+    "monitoring",
+    "campaign",
+    "slack",
+    "alerts"
+  ],
+  "author": "Rudiment",
+  "license": "MIT",
+  "dependencies": {
+    "@slack/webhook": "^7.0.1",
+    "axios": "^1.6.2",
+    "better-sqlite3": "^9.2.2",
+    "dotenv": "^16.3.1",
+    "node-cron": "^3.0.3",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.8",
+    "@types/node": "^20.10.6",
+    "@types/node-cron": "^3.0.11",
+    "@types/uuid": "^11.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  }
+}

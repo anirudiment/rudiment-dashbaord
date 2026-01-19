@@ -1,0 +1,333 @@
+import axios, { AxiosInstance } from 'axios';
+import { CampaignMetrics } from '../types';
+
+type SendEventStatsLabel =
+  | 'Replied'
+  | 'Total Opens'
+  | 'Unique Opens'
+  | 'Sent'
+  | 'Bounced'
+  | 'Unsubscribed'
+  | 'Interested';
+
+type SendEventStatsResponse = {
+  data: Array<{
+    label: SendEventStatsLabel | string;
+    color?: string;
+    dates: Array<[string, number]>; // [YYYY-MM-DD, count]
+  }>;
+};
+
+/**
+ * EmailBison in this project corresponds to Rudiment's Send API.
+ *
+ * Base URL & auth (from docs):
+ *   https://send.getrudiment.com
+ *   Authorization: Bearer <token>
+ *
+ * Campaign listing is a POST to /api/campaigns with filter payload.
+ */
+export class EmailBisonService {
+  private client: AxiosInstance;
+
+  constructor(private apiKey: string) {
+    this.client = axios.create({
+      baseURL: 'https://send.getrudiment.com',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`
+      }
+    });
+  }
+
+  /**
+   * List campaigns (Send API)
+   * Confirmed working via auth probe:
+   *   GET /api/campaigns -> 200 { data: [...] }
+   */
+  async getCampaigns(): Promise<any[]> {
+    try {
+      const response = await this.client.get('/api/campaigns');
+
+      const data = response.data;
+      if (Array.isArray(data)) return data;
+      if (Array.isArray(data?.campaigns)) return data.campaigns;
+      if (Array.isArray(data?.data)) return data.data;
+      return [];
+    } catch (error) {
+      console.error('Error fetching EmailBison/SEND campaigns:', this.summarizeAxiosError(error));
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch single campaign details.
+   * Confirmed working:
+   *   GET /api/campaigns/:id -> 200 and includes totals like emails_sent/replied/bounced/opened/total_leads.
+   */
+  async getCampaignDetails(campaignId: number | string): Promise<any> {
+    try {
+      const response = await this.client.get(`/api/campaigns/${campaignId}`);
+      return response.data?.data ?? response.data;
+    } catch (error) {
+      console.error('Error fetching EmailBison/SEND campaign details:', this.summarizeAxiosError(error));
+      throw error;
+    }
+  }
+
+  private summarizeAxiosError(error: any) {
+    return {
+      message: error?.message,
+      status: error?.response?.status,
+      url: error?.config?.baseURL ? `${error.config.baseURL}${error.config.url}` : error?.config?.url,
+      data: error?.response?.data
+    };
+  }
+
+  /**
+   * Transform Send campaign payload to our standardized metrics.
+   *
+   * The Send API exposes useful totals on GET /api/campaigns/:id:
+   *   emails_sent, replied, bounced, opened/unique_opens, total_leads
+   *
+   * We optionally accept `windowTotals` (e.g. last 7 days) from /api/campaign-events/stats.
+   * If you want lifetime, call this method without `windowTotals`.
+   */
+  transformToMetrics(
+    campaign: any,
+    windowTotals?: { sent: number; bounced: number; replied: number; opened: number; interested?: number }
+  ): CampaignMetrics {
+    // Prefer time-window totals when provided, else fall back to campaign totals.
+    const sent = Number(windowTotals?.sent ?? campaign?.emails_sent ?? campaign?.sent ?? 0);
+    const bounces = Number(windowTotals?.bounced ?? campaign?.bounced ?? 0);
+    const replies = Number(windowTotals?.replied ?? campaign?.replied ?? 0);
+    const opens = Number(windowTotals?.opened ?? campaign?.opened ?? campaign?.unique_opens ?? 0);
+    const interested = Number(windowTotals?.interested ?? 0);
+
+    const totalLeads = Number(campaign?.total_leads ?? 0);
+
+    // Send API does not expose leads_remaining directly; derive best-effort.
+    const leadsRemaining = Number(
+      campaign?.leads_remaining ??
+        (totalLeads > 0 ? Math.max(0, totalLeads - Number(campaign?.total_leads_contacted ?? 0)) : 0)
+    );
+
+    const leadsContacted = Number(
+      campaign?.total_leads_contacted ??
+        campaign?.leads_contacted ??
+        (totalLeads > 0 ? Math.max(0, totalLeads - leadsRemaining) : 0)
+    );
+
+    // Prefer API-provided interested rate if present; fall back to computed Interested/Replied.
+    // Field name is not confirmed; we support a few common variants.
+    const apiInterestedRate =
+      campaign?.interested_rate ??
+      campaign?.interestedRate ??
+      campaign?.metrics?.interested_rate ??
+      campaign?.metrics?.interestedRate;
+
+    const parseInterestedRate = (v: unknown): number | undefined => {
+      if (typeof v === 'number' && Number.isFinite(v)) return v;
+      if (typeof v !== 'string') return undefined;
+
+      // common UI-like formats: "60%" or "60" or "0.6"
+      const s = v.trim();
+      const m = s.match(/([0-9]+(?:\.[0-9]+)?)/);
+      if (!m) return undefined;
+      const num = Number(m[1]);
+      if (!Number.isFinite(num)) return undefined;
+      if (s.includes('%')) return num;
+      // If API returns 0..1, convert to percent
+      if (num > 0 && num <= 1) return num * 100;
+      return num;
+    };
+
+    const interestedRate =
+      parseInterestedRate(apiInterestedRate) ??
+      (replies > 0 ? (interested / replies) * 100 : 0);
+
+    return {
+      campaignId: String(campaign?.id ?? campaign?.campaign_id ?? ''),
+      platform: 'emailbison',
+      campaignName: campaign?.name ?? campaign?.campaign_name ?? undefined,
+      windowDays: undefined,
+      leadsRemaining,
+      leadsTotal: totalLeads,
+      leadsContacted: Number.isFinite(leadsContacted) ? leadsContacted : undefined,
+      emailsSent: sent,
+      sentCount: sent,
+      bouncedCount: bounces,
+      repliedCount: replies,
+      openedCount: opens,
+      interestedCount: interested,
+      interestedRate,
+      bounceRate: sent > 0 ? (bounces / sent) * 100 : 0,
+      replyRate: sent > 0 ? (replies / sent) * 100 : 0,
+      openRate: sent > 0 ? (opens / sent) * 100 : 0,
+      sequenceDaysRemaining: 0,
+      campaignDuration: 0,
+      dailySendVolume: sent,
+      timestamp: new Date()
+    };
+  }
+
+  /**
+   * Fetch campaign event stats for a date range, optionally filtered by campaign IDs.
+   */
+  async getCampaignEventStats(params: {
+    startDate: string; // YYYY-MM-DD
+    endDate: string; // YYYY-MM-DD
+    campaignIds?: number[];
+    senderEmailIds?: number[];
+  }): Promise<SendEventStatsResponse> {
+    try {
+      const qs = new URLSearchParams();
+      qs.set('start_date', params.startDate);
+      qs.set('end_date', params.endDate);
+
+      (params.campaignIds ?? []).forEach(id => qs.append('campaign_ids[]', String(id)));
+      (params.senderEmailIds ?? []).forEach(id => qs.append('sender_email_ids[]', String(id)));
+
+      const response = await this.client.get(`/api/campaign-events/stats?${qs.toString()}`);
+      return response.data as SendEventStatsResponse;
+    } catch (error) {
+      console.error('Error fetching EmailBison/SEND event stats:', this.summarizeAxiosError(error));
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch time series per label for the given campaign/date range.
+   * Returns a YYYY-MM-DD -> count map.
+   */
+  async getCampaignEventSeries(params: {
+    startDate: string;
+    endDate: string;
+    campaignId: number;
+  }): Promise<Record<string, Record<string, number>>> {
+    const stats = await this.getCampaignEventStats({
+      startDate: params.startDate,
+      endDate: params.endDate,
+      campaignIds: [params.campaignId]
+    });
+
+    const byLabel: Record<string, Record<string, number>> = {};
+    for (const series of stats?.data ?? []) {
+      const label = String(series.label);
+      byLabel[label] = byLabel[label] ?? {};
+      for (const [day, count] of series.dates ?? []) {
+        byLabel[label][day] = Number(count ?? 0);
+      }
+    }
+    return byLabel;
+  }
+
+  private sumEventStats(stats: SendEventStatsResponse): Record<string, number> {
+    const totals: Record<string, number> = {};
+    for (const series of stats?.data ?? []) {
+      const sum = (series?.dates ?? []).reduce((acc, [, v]) => acc + Number(v ?? 0), 0);
+      totals[String(series.label)] = sum;
+    }
+    return totals;
+  }
+
+  /**
+   * Fetch lifetime-ish event totals for a campaign.
+   *
+   * The Send API requires a date range, so we use a very early start date.
+   * This is intended for reporting (not high-frequency monitoring) because it
+   * adds extra API calls.
+   */
+  async getLifetimeEventTotals(campaignId: number): Promise<Record<string, number>> {
+    const end = new Date();
+    const fmt = (d: Date) => d.toISOString().slice(0, 10);
+    const startDate = '2000-01-01';
+    const endDate = fmt(end);
+    const stats = await this.getCampaignEventStats({ startDate, endDate, campaignIds: [campaignId] });
+    return this.sumEventStats(stats);
+  }
+
+  /**
+   * Fetch and transform all campaign metrics.
+   *
+   * We prefer **lifetime totals** from GET /api/campaigns/:id for each campaign.
+   *
+   * Note: the Send API also supports date-window stats via /api/campaign-events/stats,
+   * but for alerting we default to lifetime to avoid misleading small-sample windows.
+   */
+  async getAllCampaignMetrics(
+    clientName: string,
+    window?: { startDate?: string; endDate?: string; windowDays?: number; status?: string }
+  ): Promise<CampaignMetrics[]> {
+    try {
+      const campaigns = await this.getCampaigns();
+
+      const statusFilter = String(window?.status || 'active').toLowerCase();
+
+      const activeLike = (status: unknown) => {
+        const s = String(status ?? '').toLowerCase();
+        return s === 'active' || s === 'running' || s === 'queued' || s === 'in_progress' || s === '';
+      };
+
+      const normStatus = (s: unknown) => String(s ?? '').toLowerCase();
+      const isCompleted = (s: string) => ['completed', 'done', 'finished', 'stopped', 'ended', 'inactive', 'archived'].includes(s);
+      const isPaused = (s: string) => ['paused'].includes(s);
+      const isActive = (s: string) => activeLike(s) && !isPaused(s) && !isCompleted(s);
+
+      const filtered = campaigns.filter(c => {
+        const s = normStatus(c?.status);
+        if (statusFilter === 'all') return true;
+        if (statusFilter === 'active') return isActive(s);
+        if (statusFilter === 'paused') return isPaused(s);
+        if (statusFilter === 'completed') return isCompleted(s);
+        return isActive(s);
+      });
+
+      const campaignIds = filtered.map(c => Number(c?.id)).filter(n => Number.isFinite(n));
+
+      const result: CampaignMetrics[] = [];
+
+      for (const campaignId of campaignIds) {
+        // 1) campaign totals
+        const details = await this.getCampaignDetails(campaignId);
+
+        // If a window is provided, compute totals for that range.
+        // This is “historic” and will respond to the dashboard’s days selector.
+        if (window?.startDate && window?.endDate) {
+          try {
+            const totals = await this.getCampaignEventStats({
+              startDate: window.startDate,
+              endDate: window.endDate,
+              campaignIds: [campaignId]
+            });
+            const summed = this.sumEventStats(totals);
+            result.push(
+              {
+                ...this.transformToMetrics(details, {
+                  sent: Number(summed['Sent'] ?? 0),
+                  bounced: Number(summed['Bounced'] ?? 0),
+                  replied: Number(summed['Replied'] ?? 0),
+                  opened: Number(summed['Unique Opens'] ?? summed['Total Opens'] ?? 0),
+                  interested: Number(summed['Interested'] ?? 0)
+                }),
+                windowDays: window.windowDays
+              }
+            );
+          } catch {
+            // fallback to lifetime
+            result.push({ ...this.transformToMetrics(details), windowDays: window.windowDays });
+          }
+        } else {
+          // Lifetime totals only
+          result.push(this.transformToMetrics(details));
+        }
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Error fetching all EmailBison/SEND campaign metrics:', this.summarizeAxiosError(error));
+      return [];
+    }
+  }
+}

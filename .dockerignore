@@ -1,0 +1,11 @@
+node_modules
+lambda
+lambda.zip
+reports
+.env
+.env.*
+.git
+.DS_Store
+dist
+dashboard/node_modules
+

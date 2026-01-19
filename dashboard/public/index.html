@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rudiment Monitor — Dashboard (V1)</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="header">
+      <div class="container header__row">
+        <div>
+          <div class="brand" id="pageTitle">Rudiment Campaign Overview</div>
+          <div class="subtitle" id="pageSubtitle">—</div>
+        </div>
+        <div class="controls">
+          <select id="clientSelect" class="select" aria-label="Client"></select>
+          <select id="statusSelect" class="select" aria-label="Campaign status">
+            <option value="active" selected>Active</option>
+            <option value="paused">Paused</option>
+            <option value="completed">Completed</option>
+            <option value="all">All</option>
+          </select>
+          <select id="daysSelect" class="select">
+            <option value="1">Last 1 day</option>
+            <option value="7" selected>Last 7 days</option>
+            <option value="28">Last 4 weeks</option>
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 3 months</option>
+            <option value="180">Last 6 months</option>
+            <option value="365">Last 12 months</option>
+            <option value="lifetime">Lifetime</option>
+          </select>
+          <button id="refreshBtn" class="btn">Refresh</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="container">
+      <section class="cards" id="cards">
+        <div class="card">
+          <div class="card__label">Emails / Messages Sent</div>
+          <div class="card__value" id="sent">—</div>
+        </div>
+        <div class="card">
+          <div class="card__label">Total Contacted</div>
+          <div class="card__value" id="contacted">—</div>
+        </div>
+        <div class="card">
+          <div class="card__label">Total Replies</div>
+          <div class="card__value" id="replied">—</div>
+        </div>
+        <div class="card">
+          <div class="card__label">Interested</div>
+          <div class="card__value" id="interested">—</div>
+        </div>
+        <div class="card">
+          <div class="card__label">Reply Rate</div>
+          <div class="card__value" id="replyRate">—</div>
+        </div>
+        <div class="card">
+          <div class="card__label">Bounce Rate</div>
+          <div class="card__value" id="bounceRate">—</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel__header">
+          <div class="panel__title">Campaign performance overview</div>
+          <div class="panel__hint" id="rangeHint">—</div>
+        </div>
+        <canvas id="chart" width="860" height="220"></canvas>
+      </section>
+
+      <section class="panel">
+        <div class="panel__header">
+          <div class="panel__title">Active Campaigns</div>
+          <div class="panel__hint">Live snapshot</div>
+        </div>
+        <div class="tableWrap">
+          <table class="table" id="campaignTable">
+            <thead>
+              <tr>
+                <th>Platform</th>
+                <th>Campaign</th>
+                <th>Sent</th>
+                <th>Replies</th>
+                <th>Interested</th>
+                <th>Bounce %</th>
+                <th>Reply %</th>
+                <th>Leads Remaining</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="footer">
+        <div id="status" class="status">Ready</div>
+      </section>
+    </main>
+
+    <script src="/app.js?v=20260119-2"></script>
+  </body>
+</html>

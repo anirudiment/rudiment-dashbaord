@@ -1,0 +1,306 @@
+[
+  {
+    "id": 292237,
+    "name": "Creative Partner Expansion Outreach",
+    "creationTime": "2025-12-29T16:47:48.744701Z",
+    "linkedInUserListName": "Creative Partner Expansion Outreach",
+    "linkedInUserListId": 467479,
+    "campaignAccountIds": [
+      122646
+    ],
+    "status": "FINISHED",
+    "progressStats": {
+      "totalUsers": 0,
+      "totalUsersInProgress": 0,
+      "totalUsersPending": 0,
+      "totalUsersFinished": 0,
+      "totalUsersFailed": 0,
+      "totalUsersManuallyStopped": 0,
+      "totalUsersExcluded": 0
+    },
+    "excludeInOtherCampaigns": true,
+    "excludeHasOtherAccConversations": true,
+    "excludeContactedFromSenderInOtherCampaign": true,
+    "excludeListId": null,
+    "organizationUnitId": 104138,
+    "campaign_id": 292237,
+    "campaign_name": "Creative Partner Expansion Outreach",
+    "active": false,
+    "leads": {
+      "total": 0,
+      "contacted": 0,
+      "remaining": 0
+    },
+    "engagement": {
+      "messages_sent": 0,
+      "connections": 0,
+      "replies": 0
+    }
+  },
+  {
+    "id": 277903,
+    "name": "Sameer Z - Creative Partner",
+    "creationTime": "2025-12-04T17:45:05.691014Z",
+    "linkedInUserListName": "Sameer Z - LinkedIn Engagement",
+    "linkedInUserListId": 417385,
+    "campaignAccountIds": [
+      122646
+    ],
+    "status": "IN_PROGRESS",
+    "progressStats": {
+      "totalUsers": 79,
+      "totalUsersInProgress": 39,
+      "totalUsersPending": 4,
+      "totalUsersFinished": 25,
+      "totalUsersFailed": 2,
+      "totalUsersManuallyStopped": 0,
+      "totalUsersExcluded": 9
+    },
+    "excludeInOtherCampaigns": true,
+    "excludeHasOtherAccConversations": true,
+    "excludeContactedFromSenderInOtherCampaign": true,
+    "excludeListId": null,
+    "organizationUnitId": 104138,
+    "campaign_id": 277903,
+    "campaign_name": "Sameer Z - Creative Partner",
+    "active": true,
+    "leads": {
+      "total": 79,
+      "contacted": 64,
+      "remaining": 4
+    },
+    "engagement": {
+      "messages_sent": 0,
+      "connections": 0,
+      "replies": 0
+    }
+  },
+  {
+    "id": 265524,
+    "name": "WAF Tradeshow: Follow Up",
+    "creationTime": "2025-11-19T00:11:25.875837Z",
+    "linkedInUserListName": "WAF Tradeshow: Follow Up",
+    "linkedInUserListId": 422052,
+    "campaignAccountIds": [
+      122646
+    ],
+    "status": "FINISHED",
+    "progressStats": {
+      "totalUsers": 45,
+      "totalUsersInProgress": 2,
+      "totalUsersPending": 0,
+      "totalUsersFinished": 21,
+      "totalUsersFailed": 15,
+      "totalUsersManuallyStopped": 3,
+      "totalUsersExcluded": 4
+    },
+    "excludeInOtherCampaigns": true,
+    "excludeHasOtherAccConversations": false,
+    "excludeContactedFromSenderInOtherCampaign": true,
+    "excludeListId": null,
+    "organizationUnitId": 104138,
+    "campaign_id": 265524,
+    "campaign_name": "WAF Tradeshow: Follow Up",
+    "active": false,
+    "leads": {
+      "total": 45,
+      "contacted": 23,
+      "remaining": 0
+    },
+    "engagement": {
+      "messages_sent": 0,
+      "connections": 0,
+      "replies": 0
+    }
+  },
+  {
+    "id": 262679,
+    "name": "Inbound - Upsells",
+    "creationTime": "2025-11-14T23:25:41.434053Z",
+    "linkedInUserListName": "Inbound - Upsells",
+    "linkedInUserListId": 417391,
+    "campaignAccountIds": [
+      122646
+    ],
+    "status": "IN_PROGRESS",
+    "progressStats": {
+      "totalUsers": 505,
+      "totalUsersInProgress": 240,
+      "totalUsersPending": 1,
+      "totalUsersFinished": 247,
+      "totalUsersFailed": 13,
+      "totalUsersManuallyStopped": 2,
+      "totalUsersExcluded": 2
+    },
+    "excludeInOtherCampaigns": true,
+    "excludeHasOtherAccConversations": true,
+    "excludeContactedFromSenderInOtherCampaign": true,
+    "excludeListId": null,
+    "organizationUnitId": 104138,
+    "campaign_id": 262679,
+    "campaign_name": "Inbound - Upsells",
+    "active": true,
+    "leads": {
+      "total": 505,
+      "contacted": 487,
+      "remaining": 1
+    },
+    "engagement": {
+      "messages_sent": 0,
+      "connections": 0,
+      "replies": 0
+    }
+  },
+  {
+    "id": 262674,
+    "name": "Ismail Seleit - Influencer",
+    "creationTime": "2025-11-14T23:13:14.103287Z",
+    "linkedInUserListName": "Ismail Seleit - Linkedin Engagement",
+    "linkedInUserListId": 417387,
+    "campaignAccountIds": [
+      122646
+    ],
+    "status": "IN_PROGRESS",
+    "progressStats": {
+      "totalUsers": 1654,
+      "totalUsersInProgress": 132,
+      "totalUsersPending": 1487,
+      "totalUsersFinished": 29,
+      "totalUsersFailed": 6,
+      "totalUsersManuallyStopped": 0,
+      "totalUsersExcluded": 0
+    },
+    "excludeInOtherCampaigns": true,
+    "excludeHasOtherAccConversations": true,
+    "excludeContactedFromSenderInOtherCampaign": true,
+    "excludeListId": null,
+    "organizationUnitId": 104138,
+    "campaign_id": 262674,
+    "campaign_name": "Ismail Seleit - Influencer",
+    "active": true,
+    "leads": {
+      "total": 1654,
+      "contacted": 161,
+      "remaining": 1487
+    },
+    "engagement": {
+      "messages_sent": 0,
+      "connections": 0,
+      "replies": 0
+    }
+  },
+  {
+    "id": 262664,
+    "name": "June Chow - Creative Partner",
+    "creationTime": "2025-11-14T22:59:12.026659Z",
+    "linkedInUserListName": "June Chow - LinkedIn Engagement",
+    "linkedInUserListId": 417379,
+    "campaignAccountIds": [
+      122646
+    ],
+    "status": "PAUSED",
+    "progressStats": {
+      "totalUsers": 644,
+      "totalUsersInProgress": 147,
+      "totalUsersPending": 441,
+      "totalUsersFinished": 49,
+      "totalUsersFailed": 7,
+      "totalUsersManuallyStopped": 0,
+      "totalUsersExcluded": 0
+    },
+    "excludeInOtherCampaigns": true,
+    "excludeHasOtherAccConversations": true,
+    "excludeContactedFromSenderInOtherCampaign": true,
+    "excludeListId": null,
+    "organizationUnitId": 104138,
+    "campaign_id": 262664,
+    "campaign_name": "June Chow - Creative Partner",
+    "active": false,
+    "leads": {
+      "total": 644,
+      "contacted": 196,
+      "remaining": 441
+    },
+    "engagement": {
+      "messages_sent": 0,
+      "connections": 0,
+      "replies": 0
+    }
+  },
+  {
+    "id": 256496,
+    "name": "WAF Tradeshow: All Attendees",
+    "creationTime": "2025-11-07T18:16:26.269334Z",
+    "linkedInUserListName": "WAF Tradeshow: All Attendees",
+    "linkedInUserListId": 407902,
+    "campaignAccountIds": [
+      122646
+    ],
+    "status": "PAUSED",
+    "progressStats": {
+      "totalUsers": 32,
+      "totalUsersInProgress": 7,
+      "totalUsersPending": 0,
+      "totalUsersFinished": 23,
+      "totalUsersFailed": 2,
+      "totalUsersManuallyStopped": 0,
+      "totalUsersExcluded": 0
+    },
+    "excludeInOtherCampaigns": true,
+    "excludeHasOtherAccConversations": false,
+    "excludeContactedFromSenderInOtherCampaign": false,
+    "excludeListId": null,
+    "organizationUnitId": 104138,
+    "campaign_id": 256496,
+    "campaign_name": "WAF Tradeshow: All Attendees",
+    "active": false,
+    "leads": {
+      "total": 32,
+      "contacted": 30,
+      "remaining": 0
+    },
+    "engagement": {
+      "messages_sent": 0,
+      "connections": 0,
+      "replies": 0
+    }
+  },
+  {
+    "id": 256490,
+    "name": "WAF Tradeshow: C-Suite",
+    "creationTime": "2025-11-07T18:08:01.058749Z",
+    "linkedInUserListName": "WAF Tradeshow: C-Suite",
+    "linkedInUserListId": 407888,
+    "campaignAccountIds": [
+      122646
+    ],
+    "status": "PAUSED",
+    "progressStats": {
+      "totalUsers": 100,
+      "totalUsersInProgress": 93,
+      "totalUsersPending": 0,
+      "totalUsersFinished": 2,
+      "totalUsersFailed": 5,
+      "totalUsersManuallyStopped": 0,
+      "totalUsersExcluded": 0
+    },
+    "excludeInOtherCampaigns": false,
+    "excludeHasOtherAccConversations": false,
+    "excludeContactedFromSenderInOtherCampaign": false,
+    "excludeListId": null,
+    "organizationUnitId": 104138,
+    "campaign_id": 256490,
+    "campaign_name": "WAF Tradeshow: C-Suite",
+    "active": false,
+    "leads": {
+      "total": 100,
+      "contacted": 95,
+      "remaining": 0
+    },
+    "engagement": {
+      "messages_sent": 0,
+      "connections": 0,
+      "replies": 0
+    }
+  }
+]
