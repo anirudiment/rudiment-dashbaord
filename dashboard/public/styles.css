@@ -56,6 +56,20 @@ body {
   gap: 12px;
 }
 
+.header__left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.header__logo {
+  height: 26px;
+  width: auto;
+  display: block;
+  flex: 0 0 auto;
+}
+
 .brand {
   font-weight: 700;
   letter-spacing: 0.2px;
@@ -222,4 +236,5 @@ body {
 @media (max-width: 600px) {
   .cards { grid-template-columns: repeat(2, 1fr); }
   .controls { flex-wrap: wrap; justify-content: flex-end; }
+  .header__logo { height: 22px; }
 }
