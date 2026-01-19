@@ -10,6 +10,14 @@ dist/
 build/
 *.tsbuildinfo
 
+# Local deploy artifacts
+lambda.zip
+lambda/
+
+# Local data/report outputs
+reports/
+heyreach-campaigns.json
+
 # Database
 *.db
 *.sqlite
