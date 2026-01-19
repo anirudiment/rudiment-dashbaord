@@ -1,0 +1,17 @@
+version: 1.0
+runtime: nodejs22
+
+build:
+  commands:
+    build:
+      - npm ci
+      - npm run build
+
+run:
+  command: node dist/dashboard-server.js
+  network:
+    port: 8080
+  env:
+    - name: NODE_ENV
+      value: production
+
