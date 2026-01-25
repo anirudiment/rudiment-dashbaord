@@ -236,11 +236,10 @@ async function loadClients() {
   // Apply theme for the default-selected client.
   applyClientTheme(select.value);
 
-  // Set header/subtitle for default client.
+  // Set header for default client.
   const active = clients.find(x => x.id === select.value);
   if (active) {
-    $('pageTitle').textContent = 'Rudiment Campaign Overview';
-    $('pageSubtitle').textContent = active?.name ? `for ${active.name}` : '—';
+    $('pageTitle').textContent = active?.name ? `Campaign Overview for ${active.name}` : 'Campaign Overview';
   }
 }
 
@@ -252,10 +251,9 @@ async function refresh() {
 
   const seq = ++refreshSeq;
 
-  // Update header immediately from selected option to avoid “wrong client” header.
+  // Update header immediately from selected option.
   const selectedName = $('clientSelect')?.selectedOptions?.[0]?.textContent;
-  $('pageTitle').textContent = 'Rudiment Campaign Overview';
-  $('pageSubtitle').textContent = selectedName ? `for ${selectedName}` : '—';
+  $('pageTitle').textContent = selectedName ? `Campaign Overview for ${selectedName}` : 'Campaign Overview';
 
   applyClientTheme(clientId);
 
@@ -274,9 +272,8 @@ async function refresh() {
     // If a newer refresh started after this one, ignore these results.
     if (seq !== refreshSeq) return;
 
-    // Update header “for <Client Name>”
-    $('pageTitle').textContent = 'Rudiment Campaign Overview';
-    $('pageSubtitle').textContent = campaigns?.clientName ? `for ${campaigns.clientName}` : '—';
+    // Update header
+    $('pageTitle').textContent = campaigns?.clientName ? `Campaign Overview for ${campaigns.clientName}` : 'Campaign Overview';
 
     const s = summary.summary;
     $('sent').textContent = fmtInt(s.totals.sent);
