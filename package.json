@@ -16,6 +16,8 @@
     "report:slack": "tsx src/report-to-slack.ts",
     "lambda:zip": "npm run build && rm -rf lambda && mkdir -p lambda && cp package.json package-lock.json lambda/ && cp -R dist lambda/dist && npm ci --omit=dev --prefix lambda && cd lambda && zip -qr ../lambda.zip .",
     "test-emailbison": "tsx src/test-emailbison.ts"
+    ,
+    "preview:asana": "tsx src/test-asana-mcp-preview.ts"
   },
   "keywords": [
     "monitoring",

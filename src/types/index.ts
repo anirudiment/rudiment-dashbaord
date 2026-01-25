@@ -34,6 +34,26 @@ export interface CampaignMetrics {
   interestedCount?: number;
   /** Derived success metric where available: Interested / Replied (0-100). */
   interestedRate?: number;
+
+  /**
+   * Some platforms (e.g. HeyReach) require additional endpoints for engagement stats.
+   * When false, dashboard should treat engagement fields as unavailable (display “—”).
+   */
+  hasEngagementStats?: boolean;
+
+  /** HeyReach (LinkedIn) specific metrics (when available). */
+  connectionsSent?: number;
+  connectionsAccepted?: number;
+  /** HeyReach: connectionsAccepted / connectionsSent (0-100). */
+  connectionAcceptanceRate?: number;
+  messagesSent?: number;
+  messageReplies?: number;
+  /** HeyReach: messageReplies / messagesStarted (0-100) as reported by HeyReach dashboard. */
+  messageReplyRate?: number;
+  inMailsSent?: number;
+  inMailReplies?: number;
+  /** HeyReach: inMailReplies / inMailsStarted (0-100) as reported by HeyReach dashboard. */
+  inMailReplyRate?: number;
   bounceRate: number;
   replyRate: number;
   openRate: number;
@@ -140,3 +160,11 @@ export interface ClayResponse {
   };
   credits_used: number;
 }
+
+// Asana
+export type AsanaClientDeliverySummary = {
+  /** Asana Account custom field value (trimmed). */
+  accountName: string;
+  completedLast7Days: Array<{ gid: string; name: string; completedAt?: string; assigneeName?: string }>;
+  plannedThisWeek: Array<{ gid: string; name: string; dueOn?: string; assigneeName?: string }>;
+};

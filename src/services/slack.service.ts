@@ -8,6 +8,16 @@ export class SlackService {
     this.webhook = new IncomingWebhook(webhookUrl);
   }
 
+  /**
+   * Create a SlackService from an env var name.
+   * If the env var is missing, returns null.
+   */
+  static fromEnv(envKey: string): SlackService | null {
+    const url = process.env[envKey]?.trim();
+    if (!url) return null;
+    return new SlackService(url);
+  }
+
   private isWebhookConfigured(): boolean {
     // Prevent accidental usage of placeholder webhook from .env.example.
     // Slack often responds 404/no_team for invalid/placeholder URLs.

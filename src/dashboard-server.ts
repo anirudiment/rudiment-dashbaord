@@ -9,6 +9,7 @@ import { EmailBisonService } from './services/emailbison.service';
 import { HeyReachService } from './services/heyreach.service';
 import { InstantlyService } from './services/instantly.service';
 import { CampaignMetrics } from './types';
+import { getUtahLastNDaysRange, listDaysInclusive, addDaysYmd } from './utils/utahTime';
 
 dotenv.config();
 
@@ -38,18 +39,20 @@ function sendText(res: http.ServerResponse, status: number, body: string) {
 
 function parseDateRange(searchParams: URLSearchParams) {
   const raw = (searchParams.get('days') ?? '7').toLowerCase();
-  const end = new Date();
-  const fmt = (d: Date) => d.toISOString().slice(0, 10);
+
+  // Utah time requirement: use fixed MST (UTC-7) for calendar day boundaries.
+  // NOTE: We keep lifetime end date as “today in Utah” too so it aligns with platform UI.
+  const todayUtah = getUtahLastNDaysRange(1).endDate;
 
   // Lifetime means: very early start date to today.
   if (raw === 'lifetime') {
-    return { days: 3650, startDate: '2000-01-01', endDate: fmt(end), isLifetime: true };
+    return { days: 3650, startDate: '2000-01-01', endDate: todayUtah, isLifetime: true };
   }
 
   // Default: last N days (cap at 365 for safety)
   const days = Math.max(1, Math.min(365, Number(raw || 7)));
-  const start = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  return { days, startDate: fmt(start), endDate: fmt(end), isLifetime: false };
+  const { startDate, endDate } = getUtahLastNDaysRange(days);
+  return { days, startDate, endDate, isLifetime: false };
 }
 
 async function fetchClientMetrics(params: {
@@ -129,8 +132,19 @@ async function fetchClientMetrics(params: {
   }
   if (config.platforms.heyreach?.enabled) {
     try {
-      const svc = new HeyReachService(config.platforms.heyreach.apiKey);
-      metrics.push(...(await svc.getAllCampaignMetrics(clientName, { status })));
+      const svc = new HeyReachService(config.platforms.heyreach.apiKey, {
+        bearerToken: (config.platforms.heyreach as any).bearerToken,
+        organizationUnits: (config.platforms.heyreach as any).organizationUnits
+      });
+
+      metrics.push(
+        ...(await svc.getAllCampaignMetrics(clientName, {
+          status,
+          startDate: params.startDate,
+          endDate: params.endDate,
+          includeDashboardStats: true
+        }))
+      );
     } catch (e) {
       console.error(`[dashboard] HeyReach fetch failed for ${params.clientId}:`, (e as any)?.message ?? e);
     }
@@ -149,8 +163,17 @@ function computeSummary(metrics: CampaignMetrics[]) {
   const interested = sum('interestedCount');
   const contacted = sum('leadsContacted');
 
-  const bounceRate = sent > 0 ? (bounced / sent) * 100 : 0;
-  const replyRate = sent > 0 ? (replied / sent) * 100 : 0;
+  // Match EmailBison UI-style rates where possible:
+  // prefer “per contacted” denominators (unique replies per contacted, bounces per contacted).
+  // If contacted isn't available for a client/platform mix, fall back to sent.
+  const denomForRates = contacted > 0 ? contacted : sent;
+
+  const bounceRate = denomForRates > 0 ? (bounced / denomForRates) * 100 : 0;
+  const replyRate = denomForRates > 0 ? (replied / denomForRates) * 100 : 0;
+
+  // “Positive reply %” (EmailBison): Interested / Unique Replies.
+  // When there are no replies, define as 0.
+  const positiveReplyRate = replied > 0 ? (interested / replied) * 100 : 0;
 
   return {
     totals: {
@@ -162,7 +185,43 @@ function computeSummary(metrics: CampaignMetrics[]) {
     },
     rates: {
       bounceRate,
-      replyRate
+      replyRate,
+      positiveReplyRate
+    }
+  };
+}
+
+function computeHeyReachSummary(metrics: CampaignMetrics[]) {
+  const hey = metrics.filter(m => String(m.platform) === 'heyreach');
+
+  const sum = (k: keyof CampaignMetrics) => hey.reduce((acc, m) => acc + Number((m as any)[k] ?? 0), 0);
+  const connectionsSent = sum('connectionsSent');
+  const connectionsAccepted = sum('connectionsAccepted');
+
+  // In our mapping, HeyReach “Messages Sent” is already aligned to HeyReach UI (TotalMessageStarted).
+  const messagesSent = sum('messagesSent');
+  const messageReplies = sum('messageReplies');
+  const inMailsSent = sum('inMailsSent');
+  const inMailReplies = sum('inMailReplies');
+
+  // Use HeyReach's own definitions: these denominators match UI.
+  const acceptanceRate = connectionsSent > 0 ? (connectionsAccepted / connectionsSent) * 100 : 0;
+  const messageReplyRate = messagesSent > 0 ? (messageReplies / messagesSent) * 100 : 0;
+  const inMailReplyRate = inMailsSent > 0 ? (inMailReplies / inMailsSent) * 100 : 0;
+
+  return {
+    totals: {
+      connectionsSent,
+      connectionsAccepted,
+      messagesSent,
+      messageReplies,
+      inMailsSent,
+      inMailReplies
+    },
+    rates: {
+      acceptanceRate,
+      messageReplyRate,
+      inMailReplyRate
     }
   };
 }
@@ -248,7 +307,72 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
       clientName: data.clientName,
       generatedAt: new Date().toISOString(),
       window: { days, startDate, endDate, status, isLifetime: !!isLifetime },
-      summary: computeSummary(data.metrics)
+      summary: computeSummary(data.metrics),
+      heyreach: computeHeyReachSummary(data.metrics)
+    });
+  }
+
+  // Debug endpoint to help reconcile dashboard totals against platform UI.
+  // IMPORTANT: this endpoint does not expose API keys.
+  // Enable only when DASHBOARD_DEBUG=1.
+  if (reqUrl.pathname === '/api/debug/reconcile') {
+    if (process.env.DASHBOARD_DEBUG !== '1') return sendJson(res, 404, { error: 'Not found' });
+
+    const clientId = reqUrl.searchParams.get('clientId') || '';
+    if (!clientId) return sendJson(res, 400, { error: 'Missing clientId' });
+
+    // Allow overriding dates for exact screenshot-based comparisons.
+    const overrideStart = reqUrl.searchParams.get('startDate') || undefined;
+    const overrideEnd = reqUrl.searchParams.get('endDate') || undefined;
+
+    const data = await fetchClientMetrics({
+      clientId,
+      startDate: overrideStart ?? startDate,
+      endDate: overrideEnd ?? endDate,
+      days,
+      status
+    });
+    if (!data) return sendJson(res, 404, { error: 'Unknown clientId' });
+
+    const windowUsed = {
+      days,
+      startDate: overrideStart ?? startDate,
+      endDate: overrideEnd ?? endDate,
+      status,
+      isLifetime: !!isLifetime,
+      tzMode: 'fixed',
+      tzOffsetMinutes: Number(process.env.DASHBOARD_TZ_OFFSET_MINUTES ?? '-420')
+    };
+
+    const byPlatform: Record<string, any> = {};
+    for (const m of data.metrics) {
+      const p = String(m.platform);
+      byPlatform[p] = byPlatform[p] ?? { campaigns: 0, totals: { sent: 0, contacted: 0, replied: 0, interested: 0, bounced: 0 } };
+      byPlatform[p].campaigns += 1;
+      byPlatform[p].totals.sent += Number(m.sentCount ?? m.emailsSent ?? 0);
+      byPlatform[p].totals.contacted += Number(m.leadsContacted ?? 0);
+      byPlatform[p].totals.replied += Number(m.repliedCount ?? 0);
+      byPlatform[p].totals.interested += Number(m.interestedCount ?? 0);
+      byPlatform[p].totals.bounced += Number(m.bouncedCount ?? 0);
+    }
+
+    return sendJson(res, 200, {
+      clientId: data.clientId,
+      clientName: data.clientName,
+      generatedAt: new Date().toISOString(),
+      window: windowUsed,
+      summary: computeSummary(data.metrics),
+      byPlatform,
+      sampleCampaigns: data.metrics.slice(0, 10).map(m => ({
+        platform: m.platform,
+        campaignId: m.campaignId,
+        campaignName: m.campaignName,
+        sent: m.sentCount ?? m.emailsSent,
+        contacted: m.leadsContacted ?? null,
+        replied: m.repliedCount ?? null,
+        interested: m.interestedCount ?? null,
+        bounced: m.bouncedCount ?? null
+      }))
     });
   }
 
@@ -262,18 +386,40 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
     const campaigns = data.metrics
       .filter(m => (platform ? String(m.platform) === platform : true))
       .map(m => ({
+        // For HeyReach, engagement stats may be unavailable. In that case,
+        // return nulls rather than misleading 0s.
+        ...(String(m.platform) === 'heyreach' && m.hasEngagementStats === false
+          ? {
+              sent: null,
+              replies: null,
+              replyRate: null
+            }
+          : null),
         campaignId: m.campaignId,
         platform: m.platform,
         campaignName: m.campaignName,
         leadsTotal: m.leadsTotal,
         leadsRemaining: m.leadsRemaining,
         leadsContacted: m.leadsContacted ?? null,
-        sent: m.sentCount ?? m.emailsSent,
-        replies: m.repliedCount ?? null,
+        sent: (String(m.platform) === 'heyreach' && m.hasEngagementStats === false) ? null : (m.sentCount ?? m.emailsSent),
+        replies: (String(m.platform) === 'heyreach' && m.hasEngagementStats === false) ? null : (m.repliedCount ?? null),
         interested: m.interestedCount ?? null,
+        interestedRate: m.interestedRate ?? null,
         bounced: m.bouncedCount ?? null,
-        replyRate: m.replyRate,
-        bounceRate: m.bounceRate
+        replyRate: (String(m.platform) === 'heyreach' && m.hasEngagementStats === false) ? null : m.replyRate,
+        bounceRate: m.bounceRate,
+
+        // Platform-specific extras (safe to ignore in the UI for now)
+        hasEngagementStats: m.hasEngagementStats ?? null,
+        connectionsSent: (m as any).connectionsSent ?? null,
+        connectionsAccepted: (m as any).connectionsAccepted ?? null,
+        connectionAcceptanceRate: (m as any).connectionAcceptanceRate ?? null,
+        messagesSent: (m as any).messagesSent ?? null,
+        messageReplies: (m as any).messageReplies ?? null,
+        messageReplyRate: (m as any).messageReplyRate ?? null,
+        inMailsSent: (m as any).inMailsSent ?? null,
+        inMailReplies: (m as any).inMailReplies ?? null,
+        inMailReplyRate: (m as any).inMailReplyRate ?? null
       }));
 
     return sendJson(res, 200, { clientId: data.clientId, clientName: data.clientName, campaigns });
@@ -308,15 +454,11 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
       .map(m => Number(m.campaignId))
       .filter(n => Number.isFinite(n));
 
-    // Initialize days list
-    const seriesDays: string[] = [];
+    // Initialize days list (Utah calendar days, inclusive)
     // Don’t try to plot “lifetime” as a time series; cap chart at 30 days for readability.
     const chartDays = Math.min(30, Number(days) || 7);
-    const start = new Date(new Date(endDate).getTime() - chartDays * 24 * 60 * 60 * 1000);
-    for (let i = 0; i < chartDays; i++) {
-      const d = new Date(start.getTime() + i * 24 * 60 * 60 * 1000);
-      seriesDays.push(d.toISOString().slice(0, 10));
-    }
+    const chartStart = addDaysYmd(endDate, -(chartDays - 1));
+    const seriesDays = listDaysInclusive(chartStart, endDate);
 
     const totalsByDay: Record<string, { sent: number; replied: number; interested: number; bounced: number }> = {};
     for (const day of seriesDays) {
@@ -344,7 +486,7 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
     }
 
     const series = seriesDays.map(day => ({ day, ...totalsByDay[day] }));
-    return sendJson(res, 200, { clientId, clientName: data.clientName, days: chartDays, startDate: seriesDays[0], endDate, series });
+    return sendJson(res, 200, { clientId, clientName: data.clientName, days: seriesDays.length, startDate: seriesDays[0], endDate, series });
   }
 
   // Static

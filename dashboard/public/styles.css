@@ -123,6 +123,11 @@ body {
   margin-top: 16px;
 }
 
+/* Slightly wider KPI cards on larger screens for readability */
+@media (min-width: 1051px) {
+  .cards { grid-template-columns: repeat(3, 1fr); }
+}
+
 .card {
   background: var(--card);
   border: 1px solid var(--border);

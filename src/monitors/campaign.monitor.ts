@@ -3,25 +3,36 @@ import { getActiveClients } from '../config/clients.config';
 import { InstantlyService } from '../services/instantly.service';
 import { EmailBisonService } from '../services/emailbison.service';
 import { HeyReachService } from '../services/heyreach.service';
+import { AsanaService } from '../services/asana.service';
 import { SlackService } from '../services/slack.service';
 import { KPIAnalyzer } from './kpi.analyzer';
-import { CampaignMetrics } from '../types';
-import { buildClientDailyDigestSlackMessage } from '../reports/slack-digest';
+import { AsanaClientDeliverySummary, CampaignMetrics } from '../types';
+import {
+  buildExternalClientDigestSlackMessage,
+  buildInternalOpsDigestSlackMessage
+} from '../reports/slack-digest';
 
 dotenv.config();
 
 export class CampaignMonitor {
   private slackService: SlackService;
+  private slackInternal?: SlackService;
+  private slackExternal?: SlackService;
   private kpiAnalyzer: KPIAnalyzer;
   private slackMode: 'immediate' | 'digest';
 
   constructor() {
+    // Backwards compatible: if only SLACK_WEBHOOK_URL is set, we send everything there.
+    // If SLACK_WEBHOOK_URL_INTERNAL / SLACK_WEBHOOK_URL_EXTERNAL are set, digest mode will
+    // post different views to different destinations.
     const webhookUrl = process.env.SLACK_WEBHOOK_URL?.trim();
     if (!webhookUrl) {
       throw new Error('SLACK_WEBHOOK_URL is not set in environment variables');
     }
-    
+
     this.slackService = new SlackService(webhookUrl);
+    this.slackInternal = SlackService.fromEnv('SLACK_WEBHOOK_URL_INTERNAL') ?? undefined;
+    this.slackExternal = SlackService.fromEnv('SLACK_WEBHOOK_URL_EXTERNAL') ?? undefined;
     this.kpiAnalyzer = new KPIAnalyzer();
     this.slackMode = (process.env.SLACK_NOTIFICATIONS_MODE?.trim() as any) || 'immediate';
   }
@@ -40,6 +51,37 @@ export class CampaignMonitor {
     }
 
     console.log(`📊 Monitoring ${activeClients.length} client(s)...\n`);
+
+    // Fetch Asana delivery summary once (optional) and join into per-client digests.
+    // NOTE: requires env vars:
+    //  - ASANA_TOKEN
+    //  - ASANA_WORKSPACE_GID
+    //  - ASANA_PROJECT_GID_GTM_ENGINEER
+    //  - ASANA_ACCOUNT_CUSTOM_FIELD_GID
+    let asanaByAccount: Record<string, AsanaClientDeliverySummary> = {};
+    try {
+      const asana = AsanaService.fromEnv();
+      const projectGid = process.env.ASANA_PROJECT_GID_GTM_ENGINEER?.trim();
+      const accountFieldGid = process.env.ASANA_ACCOUNT_CUSTOM_FIELD_GID?.trim();
+      if (asana && projectGid && accountFieldGid) {
+        asanaByAccount = await asana.getClientDeliverySummary({
+          projectGid,
+          accountCustomFieldGid: accountFieldGid,
+          now: new Date()
+        });
+        console.log(`🗂️  Asana: loaded delivery summary for ${Object.keys(asanaByAccount).length} account(s)`);
+      } else {
+        const missing: string[] = [];
+        if (!process.env.ASANA_TOKEN?.trim()) missing.push('ASANA_TOKEN');
+        if (!process.env.ASANA_WORKSPACE_GID?.trim()) missing.push('ASANA_WORKSPACE_GID');
+        if (!process.env.ASANA_PROJECT_GID_GTM_ENGINEER?.trim()) missing.push('ASANA_PROJECT_GID_GTM_ENGINEER');
+        if (!process.env.ASANA_ACCOUNT_CUSTOM_FIELD_GID?.trim()) missing.push('ASANA_ACCOUNT_CUSTOM_FIELD_GID');
+        console.log(`ℹ️  Asana: not configured (${missing.join(', ') || 'unknown missing'}). Skipping Asana section.`);
+      }
+    } catch (e: any) {
+      console.error('⚠️  Asana fetch failed (continuing without Asana section):', e?.message ?? e);
+      asanaByAccount = {};
+    }
 
     const allMetrics: Array<{
       metrics: CampaignMetrics;
@@ -167,19 +209,35 @@ export class CampaignMonitor {
         const summary = this.kpiAnalyzer.getAlertSummary(alerts);
         console.log(`⚡ ${entry.clientName}: ${summary.total} alert(s) (C:${summary.critical} W:${summary.warning} S:${summary.success})`);
 
-        const payload = buildClientDailyDigestSlackMessage({
+        const digestInput = {
           clientId: entry.clientId,
           clientName: entry.clientName,
           metrics: entry.items.map(i => i.metrics),
           alerts,
-          generatedAt: new Date()
-        });
+          generatedAt: new Date(),
+          // Asana Account values match client names (sometimes with trailing spaces).
+          // We key by the trimmed accountName.
+          asana: asanaByAccount[String(entry.clientName ?? '').trim()] ?? undefined
+        };
 
+        // Always send internal digest (ops). If an internal webhook is set, use it.
+        // Otherwise fall back to the default SLACK_WEBHOOK_URL.
         try {
-          await this.slackService.sendMessage(payload);
-          console.log(`✅ Digest posted to Slack for ${entry.clientName}`);
+          const internalPayload = buildInternalOpsDigestSlackMessage(digestInput);
+          await (this.slackInternal ?? this.slackService).sendMessage(internalPayload);
+          console.log(`✅ Internal ops digest posted to Slack for ${entry.clientName}`);
         } catch (error) {
-          console.error(`❌ Error sending digest to Slack for ${entry.clientName}:`, error);
+          console.error(`❌ Error sending internal digest to Slack for ${entry.clientName}:`, error);
+        }
+
+        // External snapshot: send if external webhook is configured, otherwise also post to default
+        // (so you still see it during rollout).
+        try {
+          const externalPayload = buildExternalClientDigestSlackMessage(digestInput);
+          await (this.slackExternal ?? this.slackService).sendMessage(externalPayload);
+          console.log(`✅ External client snapshot posted to Slack for ${entry.clientName}`);
+        } catch (error) {
+          console.error(`❌ Error sending external snapshot to Slack for ${entry.clientName}:`, error);
         }
       }
 
@@ -346,20 +404,44 @@ export class CampaignMonitor {
     const alerts = this.kpiAnalyzer.analyzeMultipleCampaigns(allMetrics);
 
     if (this.slackMode === 'digest') {
-      const payload = buildClientDailyDigestSlackMessage({
+      // Pull Asana summary for this client only (optional)
+      let asanaSummary: AsanaClientDeliverySummary | undefined;
+      try {
+        const asana = AsanaService.fromEnv();
+        const projectGid = process.env.ASANA_PROJECT_GID_GTM_ENGINEER?.trim();
+        const accountFieldGid = process.env.ASANA_ACCOUNT_CUSTOM_FIELD_GID?.trim();
+        if (asana && projectGid && accountFieldGid) {
+          const by = await asana.getClientDeliverySummary({ projectGid, accountCustomFieldGid: accountFieldGid, now: new Date() });
+          asanaSummary = by[String(config.name ?? '').trim()];
+        }
+      } catch {
+        // ignore
+      }
+
+      const digestInput = {
         clientId,
         clientName: config.name,
         metrics: allMetrics.map(i => i.metrics),
         alerts,
-        generatedAt: new Date()
-      });
+        generatedAt: new Date(),
+        asana: asanaSummary
+      };
 
-      console.log('📤 Sending digest to Slack...\n');
+      console.log('📤 Sending digests to Slack...\n');
       try {
-        await this.slackService.sendMessage(payload);
-        console.log('✅ Digest sent successfully!\n');
+        const internalPayload = buildInternalOpsDigestSlackMessage(digestInput);
+        await (this.slackInternal ?? this.slackService).sendMessage(internalPayload);
+        console.log('✅ Internal ops digest sent successfully!');
       } catch (error) {
-        console.error('❌ Error sending digest to Slack:', error);
+        console.error('❌ Error sending internal digest to Slack:', error);
+      }
+
+      try {
+        const externalPayload = buildExternalClientDigestSlackMessage(digestInput);
+        await (this.slackExternal ?? this.slackService).sendMessage(externalPayload);
+        console.log('✅ External client snapshot sent successfully!\n');
+      } catch (error) {
+        console.error('❌ Error sending external snapshot to Slack:', error);
       }
       console.log('✨ Monitoring check complete!\n');
       return;

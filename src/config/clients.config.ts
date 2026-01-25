@@ -16,6 +16,10 @@ export interface ClientConfig {
     };
     heyreach?: {
       apiKey: string;
+      /** Bearer token used by HeyReach webapp endpoints like /api/Dashboard/GetOverallStatsByCampaign */
+      bearerToken?: string;
+      /** Comma-separated org unit ids required by HeyReach webapp endpoints (x-organization-units header). */
+      organizationUnits?: string;
       enabled: boolean;
     };
     clay?: {
@@ -38,6 +42,8 @@ export const clients: Record<string, ClientConfig> = {
       },
       heyreach: {
         apiKey: process.env.CLIENT1_HEYREACH_KEY || '',
+        bearerToken: process.env.CLIENT1_HEYREACH_BEARER || '',
+        organizationUnits: process.env.CLIENT1_HEYREACH_ORG_UNITS || '',
         enabled: !!process.env.CLIENT1_HEYREACH_KEY
       },
       emailbison: {
@@ -61,6 +67,8 @@ export const clients: Record<string, ClientConfig> = {
       },
       heyreach: {
         apiKey: process.env.CLIENT2_HEYREACH_KEY || '',
+        bearerToken: process.env.CLIENT2_HEYREACH_BEARER || '',
+        organizationUnits: process.env.CLIENT2_HEYREACH_ORG_UNITS || '',
         enabled: !!process.env.CLIENT2_HEYREACH_KEY
       },
       emailbison: {
@@ -84,6 +92,8 @@ export const clients: Record<string, ClientConfig> = {
       },
       heyreach: {
         apiKey: process.env.CLIENT3_HEYREACH_KEY || '',
+        bearerToken: process.env.CLIENT3_HEYREACH_BEARER || '',
+        organizationUnits: process.env.CLIENT3_HEYREACH_ORG_UNITS || '',
         enabled: !!process.env.CLIENT3_HEYREACH_KEY
       },
       emailbison: {
@@ -107,6 +117,8 @@ export const clients: Record<string, ClientConfig> = {
       },
       heyreach: {
         apiKey: process.env.CLIENT4_HEYREACH_KEY || '',
+        bearerToken: process.env.CLIENT4_HEYREACH_BEARER || '',
+        organizationUnits: process.env.CLIENT4_HEYREACH_ORG_UNITS || '',
         enabled: !!process.env.CLIENT4_HEYREACH_KEY
       },
       emailbison: {

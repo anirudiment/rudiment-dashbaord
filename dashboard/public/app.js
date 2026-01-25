@@ -146,23 +146,66 @@ function drawChart(series) {
   });
 }
 
-function renderCampaigns(campaigns) {
-  const tbody = $('campaignTable').querySelector('tbody');
+function platformLabel(platform) {
+  const p = String(platform || '').toLowerCase();
+  if (p === 'emailbison') return 'EmailBison';
+  if (p === 'instantly') return 'Instantly';
+  if (p === 'heyreach') return 'HeyReach';
+  return platform;
+}
+
+function renderEmailCampaigns(campaigns) {
+  const tbody = $('emailCampaignTable').querySelector('tbody');
   tbody.innerHTML = '';
-  const rows = campaigns || [];
+  const rows = (campaigns || []).filter(c => String(c.platform) !== 'heyreach');
 
   rows.sort((a, b) => (b.sent || 0) - (a.sent || 0));
 
   for (const c of rows) {
     const tr = document.createElement('tr');
+
+    // EmailBison: positive reply % is Interested / Unique Replies (called “Interested %” in UI).
+    // Our API exposes it as `interestedRate` (0-100). Other platforms may not have it.
+    const positiveReplyPct =
+      String(c.platform) === 'emailbison' && Number.isFinite(Number(c.interestedRate))
+        ? fmtPct(Number(c.interestedRate))
+        : '—';
     tr.innerHTML = `
-      <td><span class="pill">${c.platform}</span></td>
+      <td><span class="pill">${platformLabel(c.platform)}</span></td>
       <td>${(c.campaignName || c.campaignId || '').toString()}</td>
       <td>${fmtInt(c.sent)}</td>
       <td>${fmtInt(c.replies)}</td>
       <td>${fmtInt(c.interested)}</td>
       <td>${fmtPct(c.bounceRate)}</td>
       <td>${fmtPct(c.replyRate)}</td>
+      <td>${positiveReplyPct}</td>
+      <td>${fmtInt(c.leadsRemaining)} / ${fmtInt(c.leadsTotal)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+function renderHeyReachCampaigns(campaigns) {
+  const tbody = $('heyreachCampaignTable').querySelector('tbody');
+  tbody.innerHTML = '';
+  const rows = (campaigns || []).filter(c => String(c.platform) === 'heyreach');
+
+  // Sort by connections sent primarily
+  rows.sort((a, b) => (b.connectionsSent || 0) - (a.connectionsSent || 0));
+
+  for (const c of rows) {
+    const tr = document.createElement('tr');
+
+    const hasEng = c.hasEngagementStats === true;
+    tr.innerHTML = `
+      <td><span class="pill">${platformLabel(c.platform)}</span></td>
+      <td>${(c.campaignName || c.campaignId || '').toString()}</td>
+      <td>${hasEng ? fmtInt(c.connectionsSent) : '—'}</td>
+      <td>${hasEng ? fmtInt(c.connectionsAccepted) : '—'}</td>
+      <td>${hasEng ? fmtPct(c.connectionAcceptanceRate) : '—'}</td>
+      <td>${hasEng ? fmtInt(c.messagesSent) : '—'}</td>
+      <td>${hasEng ? fmtInt(c.messageReplies) : '—'}</td>
+      <td>${hasEng ? fmtPct(c.messageReplyRate) : '—'}</td>
       <td>${fmtInt(c.leadsRemaining)} / ${fmtInt(c.leadsTotal)}</td>
     `;
     tbody.appendChild(tr);
@@ -241,9 +284,32 @@ async function refresh() {
     $('replied').textContent = fmtInt(s.totals.replied);
     $('interested').textContent = fmtInt(s.totals.interested);
     $('replyRate').textContent = fmtPct(s.rates.replyRate);
+    $('positiveReplyRate').textContent = fmtPct(s.rates.positiveReplyRate ?? 0);
     $('bounceRate').textContent = fmtPct(s.rates.bounceRate);
 
-    renderCampaigns(campaigns.campaigns);
+    // HeyReach summary (separate KPI block)
+    const hr = summary.heyreach;
+    if (hr && hr.totals) {
+      $('hrConnectionsSent').textContent = fmtInt(hr.totals.connectionsSent);
+      $('hrConnectionsAccepted').textContent = fmtInt(hr.totals.connectionsAccepted);
+      $('hrAcceptanceRate').textContent = fmtPct(hr.rates?.acceptanceRate ?? 0);
+      $('hrMessagesSent').textContent = fmtInt(hr.totals.messagesSent);
+      $('hrMessageReplies').textContent = fmtInt(hr.totals.messageReplies);
+      $('hrMessageReplyRate').textContent = fmtPct(hr.rates?.messageReplyRate ?? 0);
+      // InMail KPIs intentionally omitted for now.
+    } else {
+      // If HeyReach not enabled for this client, keep placeholders.
+      $('hrConnectionsSent').textContent = '—';
+      $('hrConnectionsAccepted').textContent = '—';
+      $('hrAcceptanceRate').textContent = '—';
+      $('hrMessagesSent').textContent = '—';
+      $('hrMessageReplies').textContent = '—';
+      $('hrMessageReplyRate').textContent = '—';
+      // InMail KPIs intentionally omitted for now.
+    }
+
+    renderEmailCampaigns(campaigns.campaigns);
+    renderHeyReachCampaigns(campaigns.campaigns);
 
     $('rangeHint').textContent = `${series.startDate} → ${series.endDate}`;
     drawChart(series.series);

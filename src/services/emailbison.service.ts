@@ -66,9 +66,21 @@ export class EmailBisonService {
    * Confirmed working:
    *   GET /api/campaigns/:id -> 200 and includes totals like emails_sent/replied/bounced/opened/total_leads.
    */
-  async getCampaignDetails(campaignId: number | string): Promise<any> {
+  async getCampaignDetails(
+    campaignId: number | string,
+    params?: {
+      /** YYYY-MM-DD */
+      startDate?: string;
+      /** YYYY-MM-DD */
+      endDate?: string;
+    }
+  ): Promise<any> {
     try {
-      const response = await this.client.get(`/api/campaigns/${campaignId}`);
+      // The Send API supports optional start_date/end_date query params on this endpoint.
+      // This is key for matching the platform UI (e.g. “Last 60 days”) because it returns
+      // windowed totals like emails_sent, unique_replies, total_leads_contacted, etc.
+      const query = params?.startDate && params?.endDate ? { start_date: params.startDate, end_date: params.endDate } : undefined;
+      const response = await this.client.get(`/api/campaigns/${campaignId}`, query ? { params: query } : undefined);
       return response.data?.data ?? response.data;
     } catch (error) {
       console.error('Error fetching EmailBison/SEND campaign details:', this.summarizeAxiosError(error));
@@ -119,6 +131,11 @@ export class EmailBisonService {
         (totalLeads > 0 ? Math.max(0, totalLeads - leadsRemaining) : 0)
     );
 
+    // EmailBison UI % badges are typically computed “per contacted”, not “per sent”
+    // (e.g. Unique Replies %, Bounced %, Unique Opens %).
+    // If contacted is unavailable (some endpoints), fall back to sent.
+    const denomForContactRates = Number.isFinite(leadsContacted) && leadsContacted > 0 ? leadsContacted : sent;
+
     // Prefer API-provided interested rate if present; fall back to computed Interested/Replied.
     // Field name is not confirmed; we support a few common variants.
     const apiInterestedRate =
@@ -162,9 +179,10 @@ export class EmailBisonService {
       openedCount: opens,
       interestedCount: interested,
       interestedRate,
-      bounceRate: sent > 0 ? (bounces / sent) * 100 : 0,
-      replyRate: sent > 0 ? (replies / sent) * 100 : 0,
-      openRate: sent > 0 ? (opens / sent) * 100 : 0,
+      // Match EmailBison dashboard calculations
+      bounceRate: denomForContactRates > 0 ? (bounces / denomForContactRates) * 100 : 0,
+      replyRate: denomForContactRates > 0 ? (replies / denomForContactRates) * 100 : 0,
+      openRate: denomForContactRates > 0 ? (opens / denomForContactRates) * 100 : 0,
       sequenceDaysRemaining: 0,
       campaignDuration: 0,
       dailySendVolume: sent,
@@ -289,37 +307,38 @@ export class EmailBisonService {
       const result: CampaignMetrics[] = [];
 
       for (const campaignId of campaignIds) {
-        // 1) campaign totals
-        const details = await this.getCampaignDetails(campaignId);
-
-        // If a window is provided, compute totals for that range.
-        // This is “historic” and will respond to the dashboard’s days selector.
+        // If a window is provided, prefer campaign details with start_date/end_date.
+        // This matches the platform UI more closely (e.g. it includes unique_replies and
+        // total_leads_contacted for that period). Falling back to event-stats sums can
+        // drift vs UI because it may represent *total replies* rather than *unique replies*.
         if (window?.startDate && window?.endDate) {
           try {
-            const totals = await this.getCampaignEventStats({
-              startDate: window.startDate,
-              endDate: window.endDate,
-              campaignIds: [campaignId]
+            const details = await this.getCampaignDetails(campaignId, { startDate: window.startDate, endDate: window.endDate });
+
+            const sent = Number(details?.emails_sent ?? 0);
+            const bounced = Number(details?.bounced ?? 0);
+            const uniqueReplies = Number(details?.unique_replies ?? 0);
+            const opened = Number(details?.unique_opens ?? details?.opened ?? 0);
+            const interested = Number(details?.interested ?? 0);
+
+            result.push({
+              ...this.transformToMetrics(details, {
+                sent,
+                bounced,
+                replied: uniqueReplies,
+                opened,
+                interested
+              }),
+              windowDays: window.windowDays
             });
-            const summed = this.sumEventStats(totals);
-            result.push(
-              {
-                ...this.transformToMetrics(details, {
-                  sent: Number(summed['Sent'] ?? 0),
-                  bounced: Number(summed['Bounced'] ?? 0),
-                  replied: Number(summed['Replied'] ?? 0),
-                  opened: Number(summed['Unique Opens'] ?? summed['Total Opens'] ?? 0),
-                  interested: Number(summed['Interested'] ?? 0)
-                }),
-                windowDays: window.windowDays
-              }
-            );
           } catch {
-            // fallback to lifetime
+            // fallback to lifetime details
+            const details = await this.getCampaignDetails(campaignId);
             result.push({ ...this.transformToMetrics(details), windowDays: window.windowDays });
           }
         } else {
           // Lifetime totals only
+          const details = await this.getCampaignDetails(campaignId);
           result.push(this.transformToMetrics(details));
         }
       }
