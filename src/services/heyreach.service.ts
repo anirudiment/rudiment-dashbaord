@@ -24,6 +24,45 @@ type HeyReachDashboardStatsResponse = {
   error?: any;
 };
 
+// Public API stats response (confirmed via live probe)
+type HeyReachPublicOverallStats = {
+  profileViews?: number;
+  postLikes?: number;
+  follows?: number;
+  messagesSent?: number;
+  totalMessageStarted?: number;
+  totalMessageReplies?: number;
+  inmailMessagesSent?: number;
+  totalInmailStarted?: number;
+  totalInmailReplies?: number;
+  connectionsSent?: number;
+  connectionsAccepted?: number;
+  messageReplyRate?: number;
+  inMailReplyRate?: number;
+  connectionAcceptanceRate?: number;
+};
+
+type HeyReachPublicGetOverallStatsResponse = {
+  byDayStats?: Record<string, HeyReachPublicOverallStats>;
+  overallStats?: HeyReachPublicOverallStats;
+};
+
+function decodeJwtExp(bearerToken: string): Date | null {
+  try {
+    const raw = bearerToken.trim().toLowerCase().startsWith('bearer ') ? bearerToken.trim().slice(7) : bearerToken.trim();
+    const parts = raw.split('.');
+    if (parts.length < 2) return null;
+    const payloadJson = Buffer.from(parts[1], 'base64').toString('utf8');
+    const payload = JSON.parse(payloadJson);
+    if (!payload?.exp) return null;
+    const expMs = Number(payload.exp) * 1000;
+    if (!Number.isFinite(expMs)) return null;
+    return new Date(expMs);
+  } catch {
+    return null;
+  }
+}
+
 export class HeyReachService {
   private client: AxiosInstance;
   private appClient: AxiosInstance;
@@ -57,10 +96,141 @@ export class HeyReachService {
     });
   }
 
+  /**
+   * Public API: fetch overall stats. This endpoint is evergreen (X-API-KEY).
+   * Confirmed working: POST /api/public/stats/GetOverallStats
+   * Observed: requires accountIds.
+   */
+  private async getPublicOverallStats(params: {
+    accountIds: Array<string | number>;
+    organizationUnitIds?: Array<string | number>;
+    campaignIds?: Array<string | number>;
+    startDate: string;
+    endDate: string;
+  }): Promise<HeyReachPublicGetOverallStatsResponse> {
+    const payload = {
+      accountIds: (params.accountIds ?? []).map(x => Number(x)).filter(n => Number.isFinite(n)),
+      organizationUnitIds: (params.organizationUnitIds ?? []).map(x => Number(x)).filter(n => Number.isFinite(n)),
+      campaignIds: (params.campaignIds ?? []).map(x => Number(x)).filter(n => Number.isFinite(n)),
+      startDate: params.startDate,
+      endDate: params.endDate
+    };
+
+    const res = await this.client.post<HeyReachPublicGetOverallStatsResponse>('/stats/GetOverallStats', payload);
+    return res.data ?? {};
+  }
+
+  /**
+   * Public API: fetch overall stats for the provided campaigns as a single aggregate.
+   * This is more rate-limit friendly than calling once-per-campaign.
+   */
+  async getOverallStatsAggregatePublic(params: {
+    campaignIds: Array<string | number>;
+    startDate: string;
+    endDate: string;
+    accountIds: Array<string | number>;
+    organizationUnitIds?: Array<string | number>;
+  }): Promise<HeyReachDashboardStat> {
+    const data = await this.getPublicOverallStats({
+      accountIds: params.accountIds,
+      organizationUnitIds: params.organizationUnitIds,
+      campaignIds: params.campaignIds,
+      startDate: params.startDate,
+      endDate: params.endDate
+    });
+
+    const s = (data?.overallStats ?? {}) as HeyReachPublicOverallStats;
+    return {
+      ProfileViews: s.profileViews ?? 0,
+      PostLikes: s.postLikes ?? 0,
+      Follows: s.follows ?? 0,
+      MessagesSent: s.messagesSent ?? 0,
+      TotalMessageStarted: s.totalMessageStarted ?? 0,
+      TotalMessageReplies: s.totalMessageReplies ?? 0,
+      InmailMessagesSent: s.inmailMessagesSent ?? 0,
+      TotalInmailStarted: s.totalInmailStarted ?? 0,
+      TotalInmailReplies: s.totalInmailReplies ?? 0,
+      ConnectionsSent: s.connectionsSent ?? 0,
+      ConnectionsAccepted: s.connectionsAccepted ?? 0,
+      messageReplyRate: s.messageReplyRate ?? 0,
+      inMailReplyRate: s.inMailReplyRate ?? 0,
+      connectionAcceptanceRate: s.connectionAcceptanceRate ?? 0
+    };
+  }
+
+  /**
+   * Evergreen per-campaign stats using Public API.
+   * Since /stats/GetOverallStats returns one overallStats object, we call it once per campaignId.
+   */
+  async getOverallStatsByCampaignPublic(params: {
+    campaignIds: Array<string | number>;
+    startDate: string;
+    endDate: string;
+    accountIds: Array<string | number>;
+    organizationUnitIds?: Array<string | number>;
+    concurrency?: number;
+  }): Promise<Record<string, HeyReachDashboardStat>> {
+    const ids = (params.campaignIds ?? []).map(x => Number(x)).filter(n => Number.isFinite(n));
+    const concurrency = Math.max(1, Math.min(10, Number(params.concurrency ?? 3)));
+
+    const out: Record<string, HeyReachDashboardStat> = {};
+
+    // Simple concurrency-limited worker pool
+    let idx = 0;
+    const worker = async () => {
+      while (idx < ids.length) {
+        const i = idx++;
+        const campaignId = ids[i];
+        try {
+          const data = await this.getPublicOverallStats({
+            accountIds: params.accountIds,
+            organizationUnitIds: params.organizationUnitIds,
+            campaignIds: [campaignId],
+            startDate: params.startDate,
+            endDate: params.endDate
+          });
+
+          const s = (data?.overallStats ?? {}) as HeyReachPublicOverallStats;
+
+          // Adapt public schema to the dashboard-stat schema our code already uses.
+          out[String(campaignId)] = {
+            ProfileViews: s.profileViews ?? 0,
+            PostLikes: s.postLikes ?? 0,
+            Follows: s.follows ?? 0,
+            MessagesSent: s.messagesSent ?? 0,
+            TotalMessageStarted: s.totalMessageStarted ?? 0,
+            TotalMessageReplies: s.totalMessageReplies ?? 0,
+            InmailMessagesSent: s.inmailMessagesSent ?? 0,
+            TotalInmailStarted: s.totalInmailStarted ?? 0,
+            TotalInmailReplies: s.totalInmailReplies ?? 0,
+            ConnectionsSent: s.connectionsSent ?? 0,
+            ConnectionsAccepted: s.connectionsAccepted ?? 0,
+            messageReplyRate: s.messageReplyRate ?? 0,
+            inMailReplyRate: s.inMailReplyRate ?? 0,
+            connectionAcceptanceRate: s.connectionAcceptanceRate ?? 0
+          };
+        } catch (e: any) {
+          // Don't fail whole batch; just omit this campaign.
+          console.error('[heyreach] public stats failed for campaign', campaignId, e?.message ?? e);
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: Math.min(concurrency, ids.length) }, () => worker()));
+    return out;
+  }
+
   private getAppHeaders() {
     const bearer = (this.opts?.bearerToken || '').trim();
     if (!bearer) {
       throw new Error('HeyReach bearer token missing (set CLIENT*_HEYREACH_BEARER).');
+    }
+
+    // Guard: HeyReach webapp bearer is a JWT that expires.
+    // When expired, HeyReach returns 401 "Current user did not login".
+    const exp = decodeJwtExp(bearer);
+    if (exp && exp.getTime() <= Date.now()) {
+      throw new Error(`HeyReach bearer token expired at ${exp.toISOString()} (update CLIENT*_HEYREACH_BEARER).`);
     }
 
     const headers: Record<string, string> = {
@@ -71,6 +241,18 @@ export class HeyReachService {
     if (orgUnits) headers['x-organization-units'] = orgUnits;
     headers['x-requested-with'] = 'XMLHttpRequest';
     return headers;
+  }
+
+  /**
+   * Whether the provided bearer token exists and is not expired.
+   * Useful for choosing between webapp endpoints vs public API.
+   */
+  hasBearer(): boolean {
+    const bearer = (this.opts?.bearerToken || '').trim();
+    if (!bearer) return false;
+    const exp = decodeJwtExp(bearer);
+    if (exp && exp.getTime() <= Date.now()) return false;
+    return true;
   }
 
   /**
@@ -291,12 +473,47 @@ export class HeyReachService {
         try {
           const ids = base.map(m => Number(m.campaignId)).filter(n => Number.isFinite(n));
           if (ids.length) {
-            const stats = await this.getOverallStatsByCampaign({
-              campaignIds: ids,
-              startDate: new Date(opts.startDate).toISOString(),
-              endDate: new Date(opts.endDate).toISOString()
-            });
-            this.applyDashboardStats(base, stats);
+            // Prefer HeyReach webapp endpoint (single call) when bearer is available.
+            // Falls back to public API (many calls) when bearer isn't available.
+            const campaignsAny = campaigns as any[];
+            const accountIds = Array.from(
+              new Set(
+                campaignsAny
+                  .flatMap((c: any) => (c?.campaignAccountIds ?? []).map((x: any) => Number(x)))
+                  .filter((n: any) => Number.isFinite(n))
+              )
+            );
+            const organizationUnitIds = Array.from(
+              new Set(
+                campaignsAny
+                  .map((c: any) => Number(c?.organizationUnitId))
+                  .filter((n: any) => Number.isFinite(n))
+              )
+            );
+
+            const startIso = new Date(opts.startDate).toISOString();
+            const endIso = new Date(opts.endDate).toISOString();
+
+            if (this.hasBearer()) {
+              const stats = await this.getOverallStatsByCampaign({
+                campaignIds: ids,
+                startDate: startIso,
+                endDate: endIso
+              });
+              this.applyDashboardStats(base, stats);
+            } else if (accountIds.length) {
+              const stats = await this.getOverallStatsByCampaignPublic({
+                campaignIds: ids,
+                accountIds,
+                organizationUnitIds,
+                startDate: startIso,
+                endDate: endIso,
+                concurrency: 2
+              });
+              this.applyDashboardStats(base, stats);
+            } else {
+              console.warn('[heyreach] Skipping stats enrichment: no bearer token and no accountIds');
+            }
           }
         } catch (e: any) {
           // Do not fail the whole dashboard; just log.

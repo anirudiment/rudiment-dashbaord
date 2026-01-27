@@ -2,6 +2,16 @@ import * as dotenv from 'dotenv';
 
 dotenv.config();
 
+function isRealKey(v?: string) {
+  const s = String(v ?? '').trim();
+  if (!s) return false;
+  // Guard against placeholder values from .env.example
+  if (s.toLowerCase().startsWith('your_')) return false;
+  if (s.toLowerCase().includes('your_client')) return false;
+  if (s.toLowerCase().includes('comma_separated')) return false;
+  return true;
+}
+
 // Client configuration interface
 export interface ClientConfig {
   name: string;
@@ -38,21 +48,21 @@ export const clients: Record<string, ClientConfig> = {
     platforms: {
       instantly: {
         apiKey: process.env.CLIENT1_INSTANTLY_KEY || '',
-        enabled: !!process.env.CLIENT1_INSTANTLY_KEY
+        enabled: isRealKey(process.env.CLIENT1_INSTANTLY_KEY)
       },
       heyreach: {
         apiKey: process.env.CLIENT1_HEYREACH_KEY || '',
         bearerToken: process.env.CLIENT1_HEYREACH_BEARER || '',
         organizationUnits: process.env.CLIENT1_HEYREACH_ORG_UNITS || '',
-        enabled: !!process.env.CLIENT1_HEYREACH_KEY
+        enabled: isRealKey(process.env.CLIENT1_HEYREACH_KEY)
       },
       emailbison: {
         apiKey: process.env.CLIENT1_EMAILBISON_KEY || '',
-        enabled: !!process.env.CLIENT1_EMAILBISON_KEY
+        enabled: isRealKey(process.env.CLIENT1_EMAILBISON_KEY)
       },
       clay: {
         apiKey: process.env.CLIENT1_CLAY_KEY || '',
-        enabled: !!process.env.CLIENT1_CLAY_KEY
+        enabled: isRealKey(process.env.CLIENT1_CLAY_KEY)
       }
     }
   },
@@ -63,21 +73,21 @@ export const clients: Record<string, ClientConfig> = {
     platforms: {
       instantly: {
         apiKey: process.env.CLIENT2_INSTANTLY_KEY || '',
-        enabled: !!process.env.CLIENT2_INSTANTLY_KEY
+        enabled: isRealKey(process.env.CLIENT2_INSTANTLY_KEY)
       },
       heyreach: {
         apiKey: process.env.CLIENT2_HEYREACH_KEY || '',
         bearerToken: process.env.CLIENT2_HEYREACH_BEARER || '',
         organizationUnits: process.env.CLIENT2_HEYREACH_ORG_UNITS || '',
-        enabled: !!process.env.CLIENT2_HEYREACH_KEY
+        enabled: isRealKey(process.env.CLIENT2_HEYREACH_KEY)
       },
       emailbison: {
         apiKey: process.env.CLIENT2_EMAILBISON_KEY || '',
-        enabled: !!process.env.CLIENT2_EMAILBISON_KEY
+        enabled: isRealKey(process.env.CLIENT2_EMAILBISON_KEY)
       },
       clay: {
         apiKey: process.env.CLIENT2_CLAY_KEY || '',
-        enabled: !!process.env.CLIENT2_CLAY_KEY
+        enabled: isRealKey(process.env.CLIENT2_CLAY_KEY)
       }
     }
   },
@@ -88,21 +98,21 @@ export const clients: Record<string, ClientConfig> = {
     platforms: {
       instantly: {
         apiKey: process.env.CLIENT3_INSTANTLY_KEY || '',
-        enabled: !!process.env.CLIENT3_INSTANTLY_KEY
+        enabled: isRealKey(process.env.CLIENT3_INSTANTLY_KEY)
       },
       heyreach: {
         apiKey: process.env.CLIENT3_HEYREACH_KEY || '',
         bearerToken: process.env.CLIENT3_HEYREACH_BEARER || '',
         organizationUnits: process.env.CLIENT3_HEYREACH_ORG_UNITS || '',
-        enabled: !!process.env.CLIENT3_HEYREACH_KEY
+        enabled: isRealKey(process.env.CLIENT3_HEYREACH_KEY)
       },
       emailbison: {
         apiKey: process.env.CLIENT3_EMAILBISON_KEY || '',
-        enabled: !!process.env.CLIENT3_EMAILBISON_KEY
+        enabled: isRealKey(process.env.CLIENT3_EMAILBISON_KEY)
       },
       clay: {
         apiKey: process.env.CLIENT3_CLAY_KEY || '',
-        enabled: !!process.env.CLIENT3_CLAY_KEY
+        enabled: isRealKey(process.env.CLIENT3_CLAY_KEY)
       }
     }
   },
@@ -113,21 +123,146 @@ export const clients: Record<string, ClientConfig> = {
     platforms: {
       instantly: {
         apiKey: process.env.CLIENT4_INSTANTLY_KEY || '',
-        enabled: !!process.env.CLIENT4_INSTANTLY_KEY
+        enabled: isRealKey(process.env.CLIENT4_INSTANTLY_KEY)
       },
       heyreach: {
         apiKey: process.env.CLIENT4_HEYREACH_KEY || '',
         bearerToken: process.env.CLIENT4_HEYREACH_BEARER || '',
         organizationUnits: process.env.CLIENT4_HEYREACH_ORG_UNITS || '',
-        enabled: !!process.env.CLIENT4_HEYREACH_KEY
+        enabled: isRealKey(process.env.CLIENT4_HEYREACH_KEY)
       },
       emailbison: {
         apiKey: process.env.CLIENT4_EMAILBISON_KEY || '',
-        enabled: !!process.env.CLIENT4_EMAILBISON_KEY
+        enabled: isRealKey(process.env.CLIENT4_EMAILBISON_KEY)
       },
       clay: {
         apiKey: process.env.CLIENT4_CLAY_KEY || '',
-        enabled: !!process.env.CLIENT4_CLAY_KEY
+        enabled: isRealKey(process.env.CLIENT4_CLAY_KEY)
+      }
+    }
+  },
+
+  // CLIENT 5
+  'client5': {
+    name: 'Hotman Group',
+    platforms: {
+      instantly: {
+        apiKey: process.env.CLIENT5_INSTANTLY_KEY || '',
+        enabled: isRealKey(process.env.CLIENT5_INSTANTLY_KEY)
+      },
+      heyreach: {
+        apiKey: process.env.CLIENT5_HEYREACH_KEY || '',
+        bearerToken: process.env.CLIENT5_HEYREACH_BEARER || '',
+        organizationUnits: process.env.CLIENT5_HEYREACH_ORG_UNITS || '',
+        enabled: isRealKey(process.env.CLIENT5_HEYREACH_KEY)
+      },
+      emailbison: {
+        apiKey: process.env.CLIENT5_EMAILBISON_KEY || '',
+        enabled: isRealKey(process.env.CLIENT5_EMAILBISON_KEY)
+      },
+      clay: {
+        apiKey: process.env.CLIENT5_CLAY_KEY || '',
+        enabled: isRealKey(process.env.CLIENT5_CLAY_KEY)
+      }
+    }
+  },
+
+  // CLIENT 6
+  'client6': {
+    name: 'Labl',
+    platforms: {
+      instantly: {
+        apiKey: process.env.CLIENT6_INSTANTLY_KEY || '',
+        enabled: isRealKey(process.env.CLIENT6_INSTANTLY_KEY)
+      },
+      heyreach: {
+        apiKey: process.env.CLIENT6_HEYREACH_KEY || '',
+        bearerToken: process.env.CLIENT6_HEYREACH_BEARER || '',
+        organizationUnits: process.env.CLIENT6_HEYREACH_ORG_UNITS || '',
+        enabled: isRealKey(process.env.CLIENT6_HEYREACH_KEY)
+      },
+      emailbison: {
+        apiKey: process.env.CLIENT6_EMAILBISON_KEY || '',
+        enabled: isRealKey(process.env.CLIENT6_EMAILBISON_KEY)
+      },
+      clay: {
+        apiKey: process.env.CLIENT6_CLAY_KEY || '',
+        enabled: isRealKey(process.env.CLIENT6_CLAY_KEY)
+      }
+    }
+  },
+
+  // CLIENT 7
+  'client7': {
+    name: 'Spark Inventory',
+    platforms: {
+      instantly: {
+        apiKey: process.env.CLIENT7_INSTANTLY_KEY || '',
+        enabled: isRealKey(process.env.CLIENT7_INSTANTLY_KEY)
+      },
+      heyreach: {
+        apiKey: process.env.CLIENT7_HEYREACH_KEY || '',
+        bearerToken: process.env.CLIENT7_HEYREACH_BEARER || '',
+        organizationUnits: process.env.CLIENT7_HEYREACH_ORG_UNITS || '',
+        enabled: isRealKey(process.env.CLIENT7_HEYREACH_KEY)
+      },
+      emailbison: {
+        apiKey: process.env.CLIENT7_EMAILBISON_KEY || '',
+        enabled: isRealKey(process.env.CLIENT7_EMAILBISON_KEY)
+      },
+      clay: {
+        apiKey: process.env.CLIENT7_CLAY_KEY || '',
+        enabled: isRealKey(process.env.CLIENT7_CLAY_KEY)
+      }
+    }
+  },
+
+  // CLIENT 8
+  'client8': {
+    name: 'RestorixHealth',
+    platforms: {
+      instantly: {
+        apiKey: process.env.CLIENT8_INSTANTLY_KEY || '',
+        enabled: isRealKey(process.env.CLIENT8_INSTANTLY_KEY)
+      },
+      heyreach: {
+        apiKey: process.env.CLIENT8_HEYREACH_KEY || '',
+        bearerToken: process.env.CLIENT8_HEYREACH_BEARER || '',
+        organizationUnits: process.env.CLIENT8_HEYREACH_ORG_UNITS || '',
+        enabled: isRealKey(process.env.CLIENT8_HEYREACH_KEY)
+      },
+      emailbison: {
+        apiKey: process.env.CLIENT8_EMAILBISON_KEY || '',
+        enabled: isRealKey(process.env.CLIENT8_EMAILBISON_KEY)
+      },
+      clay: {
+        apiKey: process.env.CLIENT8_CLAY_KEY || '',
+        enabled: isRealKey(process.env.CLIENT8_CLAY_KEY)
+      }
+    }
+  },
+
+  // CLIENT 9
+  'client9': {
+    name: 'Workskiff',
+    platforms: {
+      instantly: {
+        apiKey: process.env.CLIENT9_INSTANTLY_KEY || '',
+        enabled: isRealKey(process.env.CLIENT9_INSTANTLY_KEY)
+      },
+      heyreach: {
+        apiKey: process.env.CLIENT9_HEYREACH_KEY || '',
+        bearerToken: process.env.CLIENT9_HEYREACH_BEARER || '',
+        organizationUnits: process.env.CLIENT9_HEYREACH_ORG_UNITS || '',
+        enabled: isRealKey(process.env.CLIENT9_HEYREACH_KEY)
+      },
+      emailbison: {
+        apiKey: process.env.CLIENT9_EMAILBISON_KEY || '',
+        enabled: isRealKey(process.env.CLIENT9_EMAILBISON_KEY)
+      },
+      clay: {
+        apiKey: process.env.CLIENT9_CLAY_KEY || '',
+        enabled: isRealKey(process.env.CLIENT9_CLAY_KEY)
       }
     }
   }

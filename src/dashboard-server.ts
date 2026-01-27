@@ -17,7 +17,216 @@ type ClientMetricsResult = {
   clientId: string;
   clientName: string;
   metrics: CampaignMetrics[];
+  heyreachAggregate?: any;
 };
+
+type CacheEntry<T> = { expiresAt: number; value: T };
+
+// Simple in-memory cache to avoid hammering upstream APIs on refresh.
+// NOTE: This is per-process; it resets on restart.
+const cache = new Map<string, CacheEntry<ClientMetricsResult>>();
+const cacheTtlMs = Math.max(5, Number(process.env.DASHBOARD_CACHE_SECONDS ?? '60')) * 1000;
+
+// De-dupe concurrent refreshes for the same client/window.
+// The dashboard UI calls /api/summary and /api/campaigns in parallel; without this,
+// we can easily exceed upstream rate limits (esp. HeyReach).
+const inFlight = new Map<string, Promise<ClientMetricsResult | null>>();
+
+// Evergreen HeyReach per-campaign stats cache (public API; can be rate-limited).
+// We keep a last-known-good cache and refresh it in the background.
+type HeyreachStatsCacheEntry = {
+  updatedAt: number;
+  statsByCampaignId: Record<string, any>;
+  status: 'idle' | 'refreshing' | 'error';
+  error?: string;
+};
+const heyreachStatsCache = new Map<string, HeyreachStatsCacheEntry>();
+const heyreachStatsTtlMs = Math.max(60, Number(process.env.HEYREACH_STATS_CACHE_SECONDS ?? '900')) * 1000;
+const heyreachStatsMinIntervalMs = Math.max(5, Number(process.env.HEYREACH_STATS_MIN_INTERVAL_SECONDS ?? '15')) * 1000;
+const heyreachStatsConcurrency = Math.max(1, Math.min(3, Number(process.env.HEYREACH_STATS_CONCURRENCY ?? '1')));
+const heyreachStatsDelayMs = Math.max(0, Number(process.env.HEYREACH_STATS_DELAY_MS ?? '250'));
+
+function heyreachCacheKey(params: {
+  clientId: string;
+  startDate: string;
+  endDate: string;
+  status: string;
+}) {
+  return [params.clientId, params.status, params.startDate, params.endDate].join('|');
+}
+
+async function sleep(ms: number) {
+  if (ms <= 0) return;
+  await new Promise(r => setTimeout(r, ms));
+}
+
+async function refreshHeyReachPerCampaignStats(params: {
+  clientId: string;
+  apiKey: string;
+  bearerToken?: string;
+  organizationUnits?: string;
+  status: string;
+  startDate: string;
+  endDate: string;
+  campaigns?: any[];
+}) {
+  const key = heyreachCacheKey({ clientId: params.clientId, status: params.status, startDate: params.startDate, endDate: params.endDate });
+  const existing = heyreachStatsCache.get(key);
+
+  // Debounce refreshes
+  if (existing?.status === 'refreshing') return;
+  if (existing?.updatedAt && Date.now() - existing.updatedAt < heyreachStatsMinIntervalMs) return;
+
+  heyreachStatsCache.set(key, {
+    updatedAt: existing?.updatedAt ?? 0,
+    statsByCampaignId: existing?.statsByCampaignId ?? {},
+    status: 'refreshing'
+  });
+
+  try {
+    const svc = new HeyReachService(params.apiKey, {
+      bearerToken: params.bearerToken,
+      organizationUnits: params.organizationUnits
+    });
+
+    // Campaign list (needed for IDs + accountIds)
+    const campaigns = params.campaigns ?? (await svc.getCampaigns());
+    const norm = (s: unknown) => String(s ?? '').toUpperCase();
+    const isActive = (s: string) => s === 'IN_PROGRESS';
+    const isCompleted = (s: string) => s === 'FINISHED' || s === 'COMPLETED';
+    const isPaused = (s: string) => s === 'PAUSED' || s === 'STOPPED';
+
+    const selected = (campaigns as any[]).filter((c: any) => {
+      const s = norm(c?.status);
+      if (params.status === 'all') return true;
+      if (params.status === 'active') return isActive(s);
+      if (params.status === 'completed') return isCompleted(s);
+      if (params.status === 'paused') return isPaused(s);
+      return isActive(s);
+    });
+
+    const campaignIds = selected.map(c => Number(c?.id ?? c?.campaign_id)).filter((n: any) => Number.isFinite(n));
+    const accountIds = Array.from(
+      new Set(
+        selected
+          .flatMap((c: any) => (c?.campaignAccountIds ?? []).map((x: any) => Number(x)))
+          .filter((n: any) => Number.isFinite(n))
+      )
+    );
+    const organizationUnitIds = Array.from(
+      new Set(selected.map((c: any) => Number(c?.organizationUnitId)).filter((n: any) => Number.isFinite(n)))
+    );
+
+    const startIso = new Date(params.startDate).toISOString();
+    const endIso = new Date(params.endDate).toISOString();
+
+    let statsByCampaignId: Record<string, any> = {};
+
+    // Prefer bearer single-call if provided AND still valid.
+    // This is not evergreen, but it’s safe to use opportunistically.
+    // Otherwise use public API per-campaign with throttling.
+    if ((params.bearerToken || '').trim()) {
+      try {
+        statsByCampaignId = await svc.getOverallStatsByCampaign({
+          campaignIds,
+          startDate: startIso,
+          endDate: endIso,
+          accountIds,
+          organizationUnitIds
+        });
+      } catch (e: any) {
+        // ignore; fall back to public
+      }
+    }
+
+    if (!Object.keys(statsByCampaignId).length && campaignIds.length && accountIds.length) {
+      // Public API fallback (one call per campaign) with throttling.
+      const ids = campaignIds.slice();
+      const out: Record<string, any> = {};
+      let idx = 0;
+
+      const worker = async () => {
+        while (idx < ids.length) {
+          const i = idx++;
+          const id = ids[i];
+          try {
+            const per = await svc.getOverallStatsByCampaignPublic({
+              campaignIds: [id],
+              accountIds,
+              organizationUnitIds,
+              startDate: startIso,
+              endDate: endIso,
+              concurrency: 1
+            });
+            out[String(id)] = per[String(id)];
+          } catch (e: any) {
+            // swallow; keep last-known-good
+          }
+          await sleep(heyreachStatsDelayMs);
+        }
+      };
+
+      await Promise.all(Array.from({ length: Math.min(heyreachStatsConcurrency, ids.length) }, () => worker()));
+      statsByCampaignId = out;
+    }
+
+    // Only overwrite cache if we got at least something.
+    const merged = {
+      ...(existing?.statsByCampaignId ?? {}),
+      ...statsByCampaignId
+    };
+
+    heyreachStatsCache.set(key, {
+      updatedAt: Date.now(),
+      statsByCampaignId: merged,
+      status: 'idle'
+    });
+  } catch (e: any) {
+    heyreachStatsCache.set(key, {
+      updatedAt: existing?.updatedAt ?? 0,
+      statsByCampaignId: existing?.statsByCampaignId ?? {},
+      status: 'error',
+      error: e?.message ?? String(e)
+    });
+  }
+}
+
+async function withRetry<T>(fn: () => Promise<T>, opts?: { tries?: number; baseDelayMs?: number; label?: string }) {
+  const tries = Math.max(1, Number(opts?.tries ?? 3));
+  const baseDelayMs = Math.max(50, Number(opts?.baseDelayMs ?? 300));
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    try {
+      return await fn();
+    } catch (e: any) {
+      const status = e?.response?.status;
+      const retryable = status === 429 || status === 502 || status === 503 || status === 504;
+      if (!retryable || attempt === tries) throw e;
+      const wait = baseDelayMs * attempt;
+      console.warn(`[dashboard] retrying${opts?.label ? ` ${opts.label}` : ''} after ${wait}ms (status=${status})`);
+      await sleep(wait);
+    }
+  }
+  // unreachable
+  throw new Error('retry exhausted');
+}
+
+function getCacheKey(params: {
+  clientId: string;
+  startDate?: string;
+  endDate?: string;
+  days?: number;
+  status?: string;
+  includeHeyReachStats?: boolean;
+}) {
+  return [
+    params.clientId,
+    params.startDate ?? '',
+    params.endDate ?? '',
+    String(params.days ?? ''),
+    String(params.status ?? ''),
+    params.includeHeyReachStats ? 'heyreachStats=1' : 'heyreachStats=0'
+  ].join('|');
+}
 
 function sendJson(res: http.ServerResponse, status: number, body: unknown) {
   const data = JSON.stringify(body);
@@ -44,9 +253,11 @@ function parseDateRange(searchParams: URLSearchParams) {
   // NOTE: We keep lifetime end date as “today in Utah” too so it aligns with platform UI.
   const todayUtah = getUtahLastNDaysRange(1).endDate;
 
-  // Lifetime means: very early start date to today.
+  // Lifetime means: start from a fixed “reasonable history” date to today.
+  // Using 2000-01-01 makes some APIs slower / more error-prone.
+  const lifetimeStart = String(process.env.DASHBOARD_LIFETIME_START ?? '2023-01-01');
   if (raw === 'lifetime') {
-    return { days: 3650, startDate: '2000-01-01', endDate: todayUtah, isLifetime: true };
+    return { days: 3650, startDate: lifetimeStart, endDate: todayUtah, isLifetime: true };
   }
 
   // Default: last N days (cap at 365 for safety)
@@ -61,7 +272,34 @@ async function fetchClientMetrics(params: {
   endDate?: string;
   days?: number;
   status?: string;
+  includeHeyReachStats?: boolean;
 }): Promise<ClientMetricsResult | null> {
+  // In-flight de-dupe (first line of defense against rate limits)
+  const inflightKey = getCacheKey({
+    clientId: params.clientId,
+    startDate: params.startDate,
+    endDate: params.endDate,
+    days: params.days,
+    status: params.status,
+    includeHeyReachStats: params.includeHeyReachStats
+  });
+  const existingPromise = inFlight.get(inflightKey);
+  if (existingPromise) return existingPromise;
+
+  const p = (async () => {
+  // Cache first (stability + rate-limit protection)
+  const key = getCacheKey({
+    clientId: params.clientId,
+    startDate: params.startDate,
+    endDate: params.endDate,
+    days: params.days,
+    status: params.status,
+    includeHeyReachStats: !!params.includeHeyReachStats
+  });
+
+  const cached = cache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
   const activeClients = getActiveClients();
   const entry = activeClients.find(c => c.id === params.clientId);
   if (!entry) return null;
@@ -69,6 +307,7 @@ async function fetchClientMetrics(params: {
   const { config } = entry;
   const clientName = config.name;
   const metrics: CampaignMetrics[] = [];
+  let heyreachAggregate: any = undefined;
 
   const status = String(params.status || 'active').toLowerCase();
 
@@ -137,20 +376,128 @@ async function fetchClientMetrics(params: {
         organizationUnits: (config.platforms.heyreach as any).organizationUnits
       });
 
-      metrics.push(
-        ...(await svc.getAllCampaignMetrics(clientName, {
-          status,
-          startDate: params.startDate,
-          endDate: params.endDate,
-          includeDashboardStats: true
-        }))
-      );
+      // Fetch HeyReach campaigns ONCE (this endpoint is rate-limited).
+      // We reuse it for:
+      //  - base campaign metrics
+      //  - aggregate stats
+      //  - per-campaign cache warmer trigger
+      const heyreachCampaigns = await withRetry(() => svc.getCampaigns(), { tries: 3, baseDelayMs: 500, label: 'heyreach.getCampaigns' });
+
+      // Build base campaign metrics from the campaign list without extra requests.
+      const norm = (s: unknown) => String(s ?? '').toUpperCase();
+      const isActive = (s: string) => s === 'IN_PROGRESS';
+      const isCompleted = (s: string) => s === 'FINISHED' || s === 'COMPLETED';
+      const isPaused = (s: string) => s === 'PAUSED' || s === 'STOPPED';
+
+      const statusFilter = String(params.status || 'active').toLowerCase();
+      const selectedCampaigns = (heyreachCampaigns as any[]).filter((c: any) => {
+        const s = norm(c?.status);
+        if (statusFilter === 'all') return true;
+        if (statusFilter === 'active') return isActive(s);
+        if (statusFilter === 'completed') return isCompleted(s);
+        if (statusFilter === 'paused') return isPaused(s);
+        return isActive(s);
+      });
+
+      metrics.push(...selectedCampaigns.map(c => svc.transformToMetrics(c as any, clientName)));
+
+      // Always try to compute an aggregate stats snapshot for HeyReach KPIs (1 request).
+      // This is much more stable than fetching per-campaign stats.
+      if (params.startDate && params.endDate) {
+        try {
+          const campaignIds = selectedCampaigns.map(c => Number((c as any)?.id ?? (c as any)?.campaign_id)).filter((n: any) => Number.isFinite(n));
+          const accountIds = Array.from(
+            new Set(
+              selectedCampaigns
+                .flatMap((c: any) => (c?.campaignAccountIds ?? []).map((x: any) => Number(x)))
+                .filter((n: any) => Number.isFinite(n))
+            )
+          );
+          const organizationUnitIds = Array.from(
+            new Set(selectedCampaigns.map((c: any) => Number(c?.organizationUnitId)).filter((n: any) => Number.isFinite(n)))
+          );
+
+          if (campaignIds.length && accountIds.length) {
+            const startIso = new Date(params.startDate).toISOString();
+            const endIso = new Date(params.endDate).toISOString();
+            heyreachAggregate = await svc.getOverallStatsAggregatePublic({
+              campaignIds,
+              accountIds,
+              organizationUnitIds,
+              startDate: startIso,
+              endDate: endIso
+            });
+          }
+        } catch (e: any) {
+          // If rate-limited here, we still render campaigns table (lead totals) fine.
+          console.warn('[dashboard] HeyReach aggregate stats unavailable:', e?.message ?? e);
+        }
+      }
+
+      // NOTE: Per-campaign HeyReach stats are merged in the /api/campaigns handler.
+      // We intentionally don't store them on the main cached value because /api/summary
+      // and /api/campaigns share a cache key and the stats may become available after
+      // the first response has already been cached.
     } catch (e) {
       console.error(`[dashboard] HeyReach fetch failed for ${params.clientId}:`, (e as any)?.message ?? e);
     }
   }
 
-  return { clientId: params.clientId, clientName, metrics };
+  const value = { clientId: params.clientId, clientName, metrics, heyreachAggregate };
+  cache.set(key, { value, expiresAt: Date.now() + cacheTtlMs });
+  return value;
+  })();
+
+  inFlight.set(inflightKey, p);
+  try {
+    return await p;
+  } finally {
+    inFlight.delete(inflightKey);
+  }
+}
+
+function computeHeyReachSummaryFromAggregate(agg?: any) {
+  if (!agg) {
+    return {
+      totals: {
+        connectionsSent: 0,
+        connectionsAccepted: 0,
+        messagesSent: 0,
+        messageReplies: 0,
+        inMailsSent: 0,
+        inMailReplies: 0
+      },
+      rates: {
+        acceptanceRate: 0,
+        messageReplyRate: 0,
+        inMailReplyRate: 0
+      },
+      source: 'none'
+    };
+  }
+
+  const num = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  const pct = (v: any) => {
+    const n = num(v);
+    return n <= 1 ? n * 100 : n;
+  };
+
+  const connectionsSent = num(agg?.ConnectionsSent);
+  const connectionsAccepted = num(agg?.ConnectionsAccepted);
+  const messagesSent = num(agg?.TotalMessageStarted ?? agg?.MessagesSent);
+  const messageReplies = num(agg?.TotalMessageReplies);
+  const inMailsSent = num(agg?.TotalInmailStarted ?? agg?.InmailMessagesSent);
+  const inMailReplies = num(agg?.TotalInmailReplies);
+
+  return {
+    totals: { connectionsSent, connectionsAccepted, messagesSent, messageReplies, inMailsSent, inMailReplies },
+    rates: {
+      acceptanceRate: pct(agg?.connectionAcceptanceRate ?? (connectionsSent > 0 ? connectionsAccepted / connectionsSent : 0)),
+      messageReplyRate: pct(agg?.messageReplyRate ?? (messagesSent > 0 ? messageReplies / messagesSent : 0)),
+      inMailReplyRate: pct(agg?.inMailReplyRate ?? (inMailsSent > 0 ? inMailReplies / inMailsSent : 0))
+    },
+    source: 'aggregate'
+  };
 }
 
 function computeSummary(metrics: CampaignMetrics[]) {
@@ -279,6 +626,11 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
   const status = (reqUrl.searchParams.get('status') || 'active').toLowerCase();
   const { startDate, endDate, days, isLifetime } = parseDateRange(reqUrl.searchParams) as any;
 
+  // HeyReach stats enrichment is expensive and can be rate-limited.
+  // Opt-in via query param (heyreachStats=1) or env (DASHBOARD_HEYREACH_STATS=1).
+  const includeHeyReachStats =
+    reqUrl.searchParams.get('heyreachStats') === '1' || process.env.DASHBOARD_HEYREACH_STATS === '1';
+
   // API routes
   if (reqUrl.pathname === '/api/clients') {
     // SECURITY: never expose API keys to the browser.
@@ -300,15 +652,20 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
   if (reqUrl.pathname === '/api/summary') {
     const clientId = reqUrl.searchParams.get('clientId') || '';
     if (!clientId) return sendJson(res, 400, { error: 'Missing clientId' });
-    const data = await fetchClientMetrics({ clientId, startDate, endDate, days, status });
+    const data = await fetchClientMetrics({ clientId, startDate, endDate, days, status, includeHeyReachStats });
     if (!data) return sendJson(res, 404, { error: 'Unknown clientId' });
+
+    const heyreachSummary = data.heyreachAggregate
+      ? computeHeyReachSummaryFromAggregate(data.heyreachAggregate)
+      : computeHeyReachSummary(data.metrics);
+
     return sendJson(res, 200, {
       clientId: data.clientId,
       clientName: data.clientName,
       generatedAt: new Date().toISOString(),
       window: { days, startDate, endDate, status, isLifetime: !!isLifetime },
       summary: computeSummary(data.metrics),
-      heyreach: computeHeyReachSummary(data.metrics)
+      heyreach: heyreachSummary
     });
   }
 
@@ -330,7 +687,8 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
       startDate: overrideStart ?? startDate,
       endDate: overrideEnd ?? endDate,
       days,
-      status
+      status,
+      includeHeyReachStats
     });
     if (!data) return sendJson(res, 404, { error: 'Unknown clientId' });
 
@@ -380,7 +738,7 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
     const clientId = reqUrl.searchParams.get('clientId') || '';
     if (!clientId) return sendJson(res, 400, { error: 'Missing clientId' });
     const platform = reqUrl.searchParams.get('platform');
-    const data = await fetchClientMetrics({ clientId, startDate, endDate, days, status });
+    const data = await fetchClientMetrics({ clientId, startDate, endDate, days, status, includeHeyReachStats });
     if (!data) return sendJson(res, 404, { error: 'Unknown clientId' });
 
     const campaigns = data.metrics
@@ -422,7 +780,66 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
         inMailReplyRate: (m as any).inMailReplyRate ?? null
       }));
 
-    return sendJson(res, 200, { clientId: data.clientId, clientName: data.clientName, campaigns });
+    // Evergreen per-campaign HeyReach stats: merge last-known-good values.
+    // Important: we do this here (not in fetchClientMetrics) so it works even when
+    // the main response is served from cache.
+    let heyreachStatsInfo: any = { status: 'disabled' };
+    if (startDate && endDate) {
+      const key = heyreachCacheKey({ clientId, status, startDate, endDate });
+      const entry = heyreachStatsCache.get(key);
+
+      // Trigger refresh if stale (don’t await). This keeps it evergreen.
+      const isStale = !entry?.updatedAt || Date.now() - entry.updatedAt > heyreachStatsTtlMs;
+      if (isStale) {
+        const activeClients = getActiveClients();
+        const cfg = activeClients.find(c => c.id === clientId)?.config?.platforms?.heyreach;
+        if (cfg?.enabled) {
+          refreshHeyReachPerCampaignStats({
+            clientId,
+            apiKey: (cfg as any).apiKey,
+            bearerToken: (cfg as any).bearerToken,
+            organizationUnits: (cfg as any).organizationUnits,
+            status,
+            startDate,
+            endDate
+          }).catch(() => null);
+        }
+      }
+
+      const statsByCampaignId = entry?.statsByCampaignId ?? {};
+      const hasAny = Object.values(statsByCampaignId).some(Boolean);
+      if (hasAny) {
+        for (const c of campaigns) {
+          if (String(c.platform) !== 'heyreach') continue;
+          const s = statsByCampaignId[String(c.campaignId)];
+          if (!s) continue;
+          c.hasEngagementStats = true;
+          c.connectionsSent = Number(s.ConnectionsSent ?? c.connectionsSent ?? 0);
+          c.connectionsAccepted = Number(s.ConnectionsAccepted ?? c.connectionsAccepted ?? 0);
+          c.connectionAcceptanceRate = Number(
+            s.connectionAcceptanceRate ?? (c.connectionsSent > 0 ? c.connectionsAccepted / c.connectionsSent : 0)
+          ) * 100;
+          c.messagesSent = Number(s.TotalMessageStarted ?? c.messagesSent ?? 0);
+          c.messageReplies = Number(s.TotalMessageReplies ?? c.messageReplies ?? 0);
+          c.messageReplyRate = Number(
+            s.messageReplyRate ?? (c.messagesSent > 0 ? c.messageReplies / c.messagesSent : 0)
+          ) * 100;
+        }
+      }
+
+      heyreachStatsInfo = {
+        status: hasAny ? 'ready' : (entry?.status ?? 'warming'),
+        updatedAt: entry?.updatedAt ?? null,
+        error: entry?.status === 'error' ? (entry?.error ?? 'unknown') : null
+      };
+    }
+
+    return sendJson(res, 200, {
+      clientId: data.clientId,
+      clientName: data.clientName,
+      campaigns,
+      heyreachStatsCache: heyreachStatsInfo
+    });
   }
 
   // Daily series endpoint (EmailBison only for now, to show a chart)
@@ -430,7 +847,7 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
     const clientId = reqUrl.searchParams.get('clientId') || '';
     if (!clientId) return sendJson(res, 400, { error: 'Missing clientId' });
 
-    const data = await fetchClientMetrics({ clientId, startDate, endDate, days, status });
+    const data = await fetchClientMetrics({ clientId, startDate, endDate, days, status, includeHeyReachStats });
     if (!data) return sendJson(res, 404, { error: 'Unknown clientId' });
 
     // Fetch daily series for EmailBison campaigns and sum by day.

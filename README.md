@@ -31,6 +31,25 @@ Monitor campaigns across **Instantly**, **EmailBison**, **HeyReach**, and **Clay
 - **API Keys** for platforms you use (Instantly/EmailBison, HeyReach, Clay)
 - **Slack Webhook URL** ([Get one here](https://api.slack.com/messaging/webhooks))
 
+### Where to get the platform keys
+
+You only need keys for platforms each client actually uses.
+
+- **Instantly**: Instantly app → Settings / API (get an API key)
+  - Put into: `CLIENT{N}_INSTANTLY_KEY`
+- **EmailBison**: EmailBison app → Settings / API key
+  - Put into: `CLIENT{N}_EMAILBISON_KEY`
+- **HeyReach**:
+  - **Required (evergreen)**: HeyReach **Public API key**
+    - Put into: `CLIENT{N}_HEYREACH_KEY`
+  - **Optional (not evergreen)**: HeyReach webapp bearer token (JWT)
+    - Put into: `CLIENT{N}_HEYREACH_BEARER`
+    - Used only for faster single-call stats when valid; if it expires we fall back automatically.
+  - **Optional**: org unit ids for webapp endpoints
+    - Put into: `CLIENT{N}_HEYREACH_ORG_UNITS`
+- **Clay**: Clay app → API key
+  - Put into: `CLIENT{N}_CLAY_KEY`
+
 ---
 
 ## 🚀 Quick Start
@@ -69,6 +88,18 @@ CLIENT1_HEYREACH_KEY=your_heyreach_api_key_here
 
 # Add more clients as you scale...
 ```
+
+#### Client ID → Name mapping (current)
+
+- `client1`: RunDiffusion
+- `client2`: Business Bricks
+- `client3`: Confetti
+- `client4`: Workstream
+- `client5`: Hotman Group
+- `client6`: Labl
+- `client7`: Spark Inventory
+- `client8`: RestorixHealth
+- `client9`: Workskiff
 
 ### 3. **Test Slack Integration**
 

@@ -311,7 +311,12 @@ async function refresh() {
     $('rangeHint').textContent = `${series.startDate} → ${series.endDate}`;
     drawChart(series.series);
 
-    setStatus(`Updated at ${new Date().toLocaleString()}`);
+    // Hint when HeyReach per-campaign stats are warming up.
+    if (campaigns?.heyreachStatsCache?.status === 'warming') {
+      setStatus(`HeyReach per-campaign stats warming… refresh in ~10–30s (${new Date().toLocaleString()})`);
+    } else {
+      setStatus(`Updated at ${new Date().toLocaleString()}`);
+    }
   } catch (err) {
     if (seq !== refreshSeq) return;
     console.error(err);
