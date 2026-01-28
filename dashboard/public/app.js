@@ -37,6 +37,8 @@ function setStatus(msg) {
 // after a user has already switched clients.
 let refreshSeq = 0;
 
+let repliesFilter = 'replied';
+
 async function api(path) {
   const res = await fetch(path, { cache: 'no-store' });
   if (!res.ok) {
@@ -45,6 +47,61 @@ async function api(path) {
     throw new Error(body?.error || `Request failed: ${res.status}`);
   }
   return res.json();
+}
+
+function fmtDateTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  return d.toLocaleString();
+}
+
+function shorten(text, n) {
+  const s = String(text ?? '').trim();
+  if (!s) return '—';
+  if (s.length <= n) return s;
+  return s.slice(0, n - 1) + '…';
+}
+
+function setRepliesTab(filter) {
+  repliesFilter = filter;
+  const btnReplied = $('repliesTabReplied');
+  const btnInterested = $('repliesTabInterested');
+  if (!btnReplied || !btnInterested) return;
+
+  const isReplied = filter === 'replied';
+  btnReplied.classList.toggle('tab--active', isReplied);
+  btnInterested.classList.toggle('tab--active', !isReplied);
+  btnReplied.setAttribute('aria-selected', isReplied ? 'true' : 'false');
+  btnInterested.setAttribute('aria-selected', !isReplied ? 'true' : 'false');
+}
+
+function renderReplies(items) {
+  const table = $('repliesTable');
+  if (!table) return;
+  const tbody = table.querySelector('tbody');
+  tbody.innerHTML = '';
+  const rows = items || [];
+
+  if (!rows.length) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td colspan="6" style="opacity:0.75;">No replies found for this range/filter.</td>`;
+    tbody.appendChild(tr);
+    return;
+  }
+
+  for (const r of rows) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><span class="pill pill--subtle">${String(r.category || 'replied')}</span></td>
+      <td>${shorten(r.fullName || '—', 36)}</td>
+      <td>${shorten(r.email || '—', 36)}</td>
+      <td>${shorten(r.campaignName || r.campaignId || '—', 40)}</td>
+      <td>${fmtDateTime(r.replyDate)}</td>
+      <td title="${String(r.message || '').replace(/\"/g, '&quot;')}">${shorten(r.message || '—', 140)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
 }
 
 function drawChart(series) {
@@ -262,11 +319,12 @@ async function refresh() {
   setStatus('Loading…');
 
   try {
-    const [summary, campaigns, series] = await Promise.all([
+    const [summary, campaigns, series, replies] = await Promise.all([
       api(`/api/summary?clientId=${encodeURIComponent(clientId)}&days=${encodeURIComponent(days)}&status=${encodeURIComponent(status)}`),
       api(`/api/campaigns?clientId=${encodeURIComponent(clientId)}&days=${encodeURIComponent(days)}&status=${encodeURIComponent(status)}`),
       // timeseries remains EmailBison-focused; still filter by status for consistency
-      api(`/api/timeseries?clientId=${encodeURIComponent(clientId)}&days=${encodeURIComponent(days)}&status=${encodeURIComponent(status)}`)
+      api(`/api/timeseries?clientId=${encodeURIComponent(clientId)}&days=${encodeURIComponent(days)}&status=${encodeURIComponent(status)}`),
+      api(`/api/replies?clientId=${encodeURIComponent(clientId)}&platform=emailbison&filter=${encodeURIComponent(repliesFilter)}&days=${encodeURIComponent(days)}&status=${encodeURIComponent(status)}&limit=50`)
     ]);
 
     // If a newer refresh started after this one, ignore these results.
@@ -311,6 +369,8 @@ async function refresh() {
     $('rangeHint').textContent = `${series.startDate} → ${series.endDate}`;
     drawChart(series.series);
 
+    renderReplies(replies.items);
+
     // Hint when HeyReach per-campaign stats are warming up.
     if (campaigns?.heyreachStatsCache?.status === 'warming') {
       setStatus(`HeyReach per-campaign stats warming… refresh in ~10–30s (${new Date().toLocaleString()})`);
@@ -333,6 +393,16 @@ async function main() {
   $('clientSelect').addEventListener('change', refresh);
   $('daysSelect').addEventListener('change', refresh);
   $('statusSelect').addEventListener('change', refresh);
+
+  // Replies tabs
+  const btnReplied = $('repliesTabReplied');
+  const btnInterested = $('repliesTabInterested');
+  if (btnReplied && btnInterested) {
+    btnReplied.addEventListener('click', () => { setRepliesTab('replied'); refresh(); });
+    btnInterested.addEventListener('click', () => { setRepliesTab('interested'); refresh(); });
+  }
+
+  setRepliesTab('replied');
 
   // auto-refresh once
   await refresh();

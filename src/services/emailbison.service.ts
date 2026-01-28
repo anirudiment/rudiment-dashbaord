@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
-import { CampaignMetrics } from '../types';
+import { CampaignMetrics, ReplyLead } from '../types';
 
 type SendEventStatsLabel =
   | 'Replied'
@@ -348,5 +348,284 @@ export class EmailBisonService {
       console.error('Error fetching all EmailBison/SEND campaign metrics:', this.summarizeAxiosError(error));
       return [];
     }
+  }
+
+  private parseReplyDateMs(r: any): number {
+    const raw = r?.date_received ?? r?.created_at;
+    const ms = raw ? new Date(String(raw)).getTime() : 0;
+    return Number.isFinite(ms) ? ms : 0;
+  }
+
+  /**
+   * Fetch replies with pagination.
+   *
+   * Notes:
+   * - The Send API appears to ignore start_date/end_date for /api/replies in this workspace.
+   * - We therefore paginate and stop when we reach replies older than `stopBeforeDate`.
+   */
+  private async fetchRepliesPaged(params: {
+    perPage: number;
+    maxPages: number;
+    stopBeforeDate?: string; // YYYY-MM-DD
+  }): Promise<any[]> {
+    const perPage = Math.max(1, Math.min(200, Number(params.perPage)));
+    const maxPages = Math.max(1, Math.min(50, Number(params.maxPages)));
+    const stopBeforeMs = params.stopBeforeDate ? new Date(`${params.stopBeforeDate}T00:00:00.000Z`).getTime() : null;
+
+    const out: any[] = [];
+    for (let page = 1; page <= maxPages; page++) {
+      const res = await this.client.get('/api/replies', { params: { per_page: perPage, page } });
+      const rows: any[] = Array.isArray(res.data?.data) ? res.data.data : [];
+      if (!rows.length) break;
+      out.push(...rows);
+
+      if (stopBeforeMs != null) {
+        const last = rows[rows.length - 1];
+        const lastMs = this.parseReplyDateMs(last);
+        if (lastMs > 0 && lastMs < stopBeforeMs) break;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Fetch “Interested” replies (AI labeled) and join them to leads.
+   *
+   * Returns a list of ReplyLead objects for dashboard display.
+   *
+   * Notes:
+   * - Send replies can include automated/bounce notifications. We exclude automated replies by default.
+   * - Not every reply is associated to a lead/campaign (lead_id/campaign_id can be null).
+   */
+  async getInterestedReplyLeads(params: {
+    clientId: string;
+    clientName: string;
+    /** YYYY-MM-DD */
+    startDate?: string;
+    /** YYYY-MM-DD */
+    endDate?: string;
+    campaignId?: number | string;
+    limit?: number;
+    includeAutomated?: boolean;
+  }): Promise<ReplyLead[]> {
+    const limit = Math.max(1, Math.min(200, Number(params.limit ?? 50)));
+    const windowStart = params.startDate;
+
+    // Paginate for up to ~1k replies (20 pages * 50).
+    // Then filter client-side because server-side interested/start_date filters appear unreliable.
+    const replies: any[] = await this.fetchRepliesPaged({ perPage: 50, maxPages: 20, stopBeforeDate: windowStart });
+
+    const isInterested = (v: any) => v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true';
+
+    const filtered = replies.filter(r => {
+      if (!r) return false;
+      if (!isInterested(r.interested)) return false;
+      if (!params.includeAutomated && r.automated_reply) return false;
+      // NOTE: do NOT require lead_id here; some replies may not be joined even though they're marked interested.
+      return true;
+    });
+
+    // De-dupe lead fetches (best-effort)
+    const uniqueLeadIds = Array.from(new Set(filtered.map(r => Number(r.lead_id)).filter(n => Number.isFinite(n))));
+
+    const leadById = new Map<number, any>();
+    for (const id of uniqueLeadIds) {
+      try {
+        const res = await this.client.get(`/api/leads/${id}`);
+        const lead = res.data?.data ?? res.data;
+        if (lead) leadById.set(id, lead);
+      } catch {
+        // ignore missing lead
+      }
+    }
+
+    // Optional campaign name enrichment
+    const campaignNameById = new Map<string, string>();
+    const uniqueCampaignIds = Array.from(new Set(filtered.map(r => r.campaign_id).filter(Boolean).map((x: any) => String(x))));
+    if (uniqueCampaignIds.length) {
+      try {
+        const campaigns = await this.getCampaigns();
+        for (const c of campaigns) {
+          const id = c?.id != null ? String(c.id) : null;
+          if (!id) continue;
+          if (!uniqueCampaignIds.includes(id)) continue;
+          campaignNameById.set(id, String(c?.name ?? ''));
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    const out: ReplyLead[] = [];
+    for (const r of filtered) {
+      // Ensure reply is within the requested window (when provided)
+      if (params.startDate) {
+        const ms = this.parseReplyDateMs(r);
+        const startMs = new Date(`${params.startDate}T00:00:00.000Z`).getTime();
+        if (ms && ms < startMs) continue;
+      }
+      if (params.endDate) {
+        const ms = this.parseReplyDateMs(r);
+        const endMs = new Date(`${params.endDate}T23:59:59.999Z`).getTime();
+        if (ms && ms > endMs) continue;
+      }
+
+      const leadIdNum = Number(r.lead_id);
+      const lead = Number.isFinite(leadIdNum) ? leadById.get(leadIdNum) : null;
+
+      const first = String(lead?.first_name ?? '').trim();
+      const last = String(lead?.last_name ?? '').trim();
+      const fullName = [first, last].filter(Boolean).join(' ') || (r.from_name ? String(r.from_name) : null);
+      const email = (lead?.email ? String(lead.email) : (r.from_email_address ? String(r.from_email_address) : null)) as string | null;
+
+      const msg = (r.text_body ?? r.html_body ?? r.raw_body ?? null) as any;
+      const message = msg ? String(msg).trim().slice(0, 400) : null;
+
+      const campaignId = r.campaign_id != null ? String(r.campaign_id) : null;
+      const campaignName = campaignId ? (campaignNameById.get(campaignId) || null) : null;
+
+      out.push({
+        platform: 'emailbison',
+        clientId: params.clientId,
+        clientName: params.clientName,
+        category: 'interested',
+        campaignId,
+        campaignName,
+        fullName,
+        email,
+        replyDate: r.date_received ? String(r.date_received) : (r.created_at ? String(r.created_at) : null),
+        message,
+        sourceReplyId: r.id ?? null,
+        sourceLeadId: r.lead_id ?? null
+      });
+    }
+
+    // newest first
+    out.sort((a, b) => String(b.replyDate ?? '').localeCompare(String(a.replyDate ?? '')));
+    return out.slice(0, limit);
+  }
+
+  /**
+   * Fetch recent replies (any reply) and join to leads where possible.
+   * This is useful because some workspaces may have 0 Interested replies.
+   */
+  async getReplyLeads(params: {
+    clientId: string;
+    clientName: string;
+    /** YYYY-MM-DD */
+    startDate?: string;
+    /** YYYY-MM-DD */
+    endDate?: string;
+    campaignId?: number | string;
+    limit?: number;
+    includeAutomated?: boolean;
+  }): Promise<ReplyLead[]> {
+    const limit = Math.max(1, Math.min(200, Number(params.limit ?? 50)));
+    const replies: any[] = await this.fetchRepliesPaged({ perPage: 50, maxPages: 20, stopBeforeDate: params.startDate });
+
+    const isSystemOrNoise = (r: any) => {
+      const type = String(r?.type ?? '').toLowerCase();
+      const subject = String(r?.subject ?? '').toLowerCase();
+      const from = String(r?.from_email_address ?? '').toLowerCase();
+
+      // Explicit platform types
+      if (type === 'bounce' || type === 'bounced') return true;
+      if (type === 'outgoing email' || type === 'outgoing') return true;
+      if (type === 'untracked reply') return true;
+
+      // Common system / DMARC report senders
+      if (from.includes('dmarc') || from.includes('postmaster') || from.includes('mailer-daemon')) return true;
+
+      // DMARC report subject patterns
+      if (subject.includes('dmarc') || subject.includes('report domain') || subject.includes('aggregate report')) return true;
+
+      return false;
+    };
+
+    const filtered = replies.filter(r => {
+      if (!r) return false;
+      if (!params.includeAutomated && r.automated_reply) return false;
+      // Remove noise from “All Replies” view
+      if (isSystemOrNoise(r)) return false;
+      return true;
+    });
+
+    const uniqueLeadIds = Array.from(
+      new Set(filtered.map(r => Number(r.lead_id)).filter(n => Number.isFinite(n)))
+    );
+
+    const leadById = new Map<number, any>();
+    for (const id of uniqueLeadIds) {
+      try {
+        const res = await this.client.get(`/api/leads/${id}`);
+        const lead = res.data?.data ?? res.data;
+        if (lead) leadById.set(id, lead);
+      } catch {
+        // ignore
+      }
+    }
+
+    const campaignNameById = new Map<string, string>();
+    const uniqueCampaignIds = Array.from(new Set(filtered.map(r => r.campaign_id).filter(Boolean).map((x: any) => String(x))));
+    if (uniqueCampaignIds.length) {
+      try {
+        const campaigns = await this.getCampaigns();
+        for (const c of campaigns) {
+          const id = c?.id != null ? String(c.id) : null;
+          if (!id) continue;
+          if (!uniqueCampaignIds.includes(id)) continue;
+          campaignNameById.set(id, String(c?.name ?? ''));
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    const out: ReplyLead[] = [];
+    for (const r of filtered) {
+      // Ensure within window
+      if (params.startDate) {
+        const ms = this.parseReplyDateMs(r);
+        const startMs = new Date(`${params.startDate}T00:00:00.000Z`).getTime();
+        if (ms && ms < startMs) continue;
+      }
+      if (params.endDate) {
+        const ms = this.parseReplyDateMs(r);
+        const endMs = new Date(`${params.endDate}T23:59:59.999Z`).getTime();
+        if (ms && ms > endMs) continue;
+      }
+      const leadIdNum = Number(r.lead_id);
+      const lead = Number.isFinite(leadIdNum) ? leadById.get(leadIdNum) : null;
+
+      const first = String(lead?.first_name ?? '').trim();
+      const last = String(lead?.last_name ?? '').trim();
+      const fullName = [first, last].filter(Boolean).join(' ') || (r.from_name ? String(r.from_name) : null);
+
+      const email = (lead?.email ? String(lead.email) : (r.from_email_address ? String(r.from_email_address) : null)) as string | null;
+
+      const msg = (r.text_body ?? r.html_body ?? r.raw_body ?? null) as any;
+      const message = msg ? String(msg).trim().slice(0, 400) : null;
+
+      const campaignId = r.campaign_id != null ? String(r.campaign_id) : null;
+      const campaignName = campaignId ? (campaignNameById.get(campaignId) || null) : null;
+
+      out.push({
+        platform: 'emailbison',
+        clientId: params.clientId,
+        clientName: params.clientName,
+        category: 'replied',
+        campaignId,
+        campaignName,
+        fullName: fullName || null,
+        email,
+        replyDate: r.date_received ? String(r.date_received) : (r.created_at ? String(r.created_at) : null),
+        message,
+        sourceReplyId: r.id ?? null,
+        sourceLeadId: r.lead_id ?? null
+      });
+    }
+
+    out.sort((a, b) => String(b.replyDate ?? '').localeCompare(String(a.replyDate ?? '')));
+    return out.slice(0, limit);
   }
 }

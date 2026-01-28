@@ -8,7 +8,7 @@ import { getActiveClients } from './config/clients.config';
 import { EmailBisonService } from './services/emailbison.service';
 import { HeyReachService } from './services/heyreach.service';
 import { InstantlyService } from './services/instantly.service';
-import { CampaignMetrics } from './types';
+import { CampaignMetrics, ReplyLead } from './types';
 import { getUtahLastNDaysRange, listDaysInclusive, addDaysYmd } from './utils/utahTime';
 
 dotenv.config();
@@ -18,6 +18,13 @@ type ClientMetricsResult = {
   clientName: string;
   metrics: CampaignMetrics[];
   heyreachAggregate?: any;
+};
+
+type ClientRepliesResult = {
+  clientId: string;
+  clientName: string;
+  window: { days: number; startDate: string; endDate: string; status: string; isLifetime: boolean };
+  items: ReplyLead[];
 };
 
 type CacheEntry<T> = { expiresAt: number; value: T };
@@ -667,6 +674,51 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
       summary: computeSummary(data.metrics),
       heyreach: heyreachSummary
     });
+  }
+
+  // Replies (EmailBison first). Returns lead-level replies for display.
+  if (reqUrl.pathname === '/api/replies') {
+    const clientId = reqUrl.searchParams.get('clientId') || '';
+    if (!clientId) return sendJson(res, 400, { error: 'Missing clientId' });
+
+    const platform = (reqUrl.searchParams.get('platform') || 'emailbison').toLowerCase();
+    const filter = (reqUrl.searchParams.get('filter') || 'replied').toLowerCase();
+    const limit = Math.max(1, Math.min(200, Number(reqUrl.searchParams.get('limit') || '50')));
+
+    const activeClients = getActiveClients();
+    const entry = activeClients.find(c => c.id === clientId);
+    if (!entry) return sendJson(res, 404, { error: 'Unknown clientId' });
+
+    const { config } = entry;
+    const clientName = config.name;
+
+    const windowUsed = { days, startDate, endDate, status, isLifetime: !!isLifetime };
+
+    // EmailBison interested replies
+    if (platform === 'emailbison') {
+      if (!config.platforms.emailbison?.enabled) {
+        return sendJson(res, 200, { clientId, clientName, window: windowUsed, items: [] } satisfies ClientRepliesResult);
+      }
+
+      try {
+        const svc = new EmailBisonService(config.platforms.emailbison.apiKey);
+        const items =
+          filter === 'interested'
+            ? await svc.getInterestedReplyLeads({ clientId, clientName, startDate, endDate, limit })
+            : await svc.getReplyLeads({ clientId, clientName, startDate, endDate, limit });
+
+        return sendJson(res, 200, { clientId, clientName, window: windowUsed, items } satisfies ClientRepliesResult);
+      } catch (e: any) {
+        return sendJson(res, 500, { error: e?.message ?? String(e) });
+      }
+    }
+
+    // HeyReach will be added after EmailBison is stable.
+    if (platform === 'heyreach') {
+      return sendJson(res, 501, { error: 'HeyReach replies not implemented yet (EmailBison first).' });
+    }
+
+    return sendJson(res, 400, { error: `Unsupported platform: ${platform}` });
   }
 
   // Debug endpoint to help reconcile dashboard totals against platform UI.

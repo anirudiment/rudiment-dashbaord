@@ -63,6 +63,37 @@ export interface CampaignMetrics {
   timestamp: Date;
 }
 
+/**
+ * A single lead reply item displayed in the Dashboard “Replies” table.
+ *
+ * - Email platforms provide `email`
+ * - LinkedIn platforms provide `linkedinUrl`
+ */
+export interface ReplyLead {
+  platform: 'emailbison' | 'heyreach' | string;
+  clientId: string;
+  clientName: string;
+
+  campaignId?: string | number | null;
+  campaignName?: string | null;
+
+  fullName?: string | null;
+  email?: string | null;
+  linkedinUrl?: string | null;
+
+  /** e.g. "interested" (EmailBison AI tag) or "replied" (HeyReach any reply) */
+  category: 'interested' | 'replied' | string;
+
+  /** ISO timestamp when reply was received (if available). */
+  replyDate?: string | null;
+  /** Reply content preview (if available). */
+  message?: string | null;
+
+  /** Raw ids for debugging / future joins. */
+  sourceReplyId?: string | number | null;
+  sourceLeadId?: string | number | null;
+}
+
 export interface Alert {
   id: string;
   campaignId: string;

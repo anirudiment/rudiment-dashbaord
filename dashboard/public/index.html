@@ -166,11 +166,39 @@
         </div>
       </section>
 
+      <section class="panel" id="repliesPanel">
+        <div class="panel__header">
+          <div class="panel__title">Replies</div>
+          <div class="panel__hint">EmailBison (Send)</div>
+        </div>
+
+        <div class="tabs" role="tablist" aria-label="Replies filters">
+          <button class="tab tab--active" id="repliesTabReplied" data-filter="replied" role="tab" aria-selected="true">All Replies</button>
+          <button class="tab" id="repliesTabInterested" data-filter="interested" role="tab" aria-selected="false">Interested</button>
+        </div>
+
+        <div class="tableWrap">
+          <table class="table" id="repliesTable">
+            <thead>
+              <tr>
+                <th>Category</th>
+                <th>Lead</th>
+                <th>Email</th>
+                <th>Campaign</th>
+                <th>Date</th>
+                <th>Message</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
       <section class="footer">
         <div id="status" class="status">Ready</div>
       </section>
     </main>
 
-    <script src="/app.js?v=20260119-3"></script>
+    <script src="/app.js?v=20260128-1"></script>
   </body>
 </html>
