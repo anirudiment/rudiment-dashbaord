@@ -727,6 +727,35 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
       }
     }
 
+    if (platform === 'instantly') {
+      if (!config.platforms.instantly?.enabled) {
+        return sendJson(res, 200, { clientId, clientName, window: windowUsed, items: [] } satisfies ClientRepliesResult);
+      }
+
+      try {
+        const svc = new InstantlyService(config.platforms.instantly.apiKey);
+
+        // For now we support only “All Replies” from Unibox.
+        // “Interested” lead list is plan-gated (/opportunities ERR_AUTH_FAILED),
+        // so we return a warning.
+        if (filter === 'interested') {
+          return sendJson(res, 200, {
+            clientId,
+            clientName,
+            window: windowUsed,
+            warning: 'Instantly Interested lead list is not available via API for this workspace (opportunities endpoint is blocked). Showing empty list.' ,
+            items: []
+          } as any);
+        }
+
+        const items = await svc.getReplyLeads({ clientId, clientName, startDate, endDate, limit });
+
+        return sendJson(res, 200, { clientId, clientName, window: windowUsed, items } satisfies ClientRepliesResult);
+      } catch (e: any) {
+        return sendJson(res, 500, { error: e?.message ?? String(e) });
+      }
+    }
+
     // HeyReach will be added after EmailBison is stable.
     if (platform === 'heyreach') {
       return sendJson(res, 501, { error: 'HeyReach replies not implemented yet (EmailBison first).' });

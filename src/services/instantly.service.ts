@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
-import { CampaignMetrics, InstantlyResponse } from '../types';
+import { CampaignMetrics, InstantlyResponse, ReplyLead } from '../types';
 
 export class InstantlyService {
   private client: AxiosInstance;
@@ -245,5 +245,136 @@ export class InstantlyService {
       console.error('Error fetching all Instantly campaign metrics:', error);
       return [];
     }
+  }
+
+  /**
+   * List Unibox emails.
+   *
+   * Docs: GET /api/v2/emails
+   * Returns: { items: Email[], next_starting_after?: string }
+   */
+  async listEmails(params?: {
+    limit?: number;
+    startingAfter?: string;
+    /** Optional server-side filter (may not be reliable across orgs). */
+    ueType?: number;
+  }): Promise<{ items: any[]; next_starting_after?: string } | any> {
+    const limit = Math.max(1, Math.min(100, Number(params?.limit ?? 50)));
+    const response = await this.client.get('/api/v2/emails', {
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`
+      },
+      params: {
+        limit,
+        ...(params?.startingAfter ? { starting_after: params.startingAfter } : null),
+        ...(params?.ueType != null ? { ue_type: params.ueType } : null)
+      }
+    });
+    return response.data;
+  }
+
+  /**
+   * Fetch recent reply leads (Instantly Unibox).
+   *
+   * Instantly does not currently expose a clean server-side date filter for /emails,
+   * so we page newest->older and stop once we reach older-than-startDate.
+   */
+  async getReplyLeads(params: {
+    clientId: string;
+    clientName: string;
+    startDate?: string; // YYYY-MM-DD
+    endDate?: string; // YYYY-MM-DD
+    campaignId?: string;
+    limit?: number;
+    /** Max pages to scan (protect against large inboxes). */
+    maxPages?: number;
+  }): Promise<ReplyLead[]> {
+    const limit = Math.max(1, Math.min(200, Number(params.limit ?? 50)));
+    const maxPages = Math.max(1, Math.min(30, Number(params.maxPages ?? 10)));
+
+    const startMs = params.startDate ? new Date(`${params.startDate}T00:00:00.000Z`).getTime() : null;
+    const endMs = params.endDate ? new Date(`${params.endDate}T23:59:59.999Z`).getTime() : null;
+
+    const out: ReplyLead[] = [];
+    let startingAfter: string | undefined = undefined;
+
+    const toPlain = (html: string) =>
+      String(html ?? '')
+        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<br\s*\/?\s*>/gi, '\n')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+\n/g, '\n')
+        .replace(/\n\s+/g, '\n')
+        .replace(/[\t\r]+/g, ' ')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+
+    const isInbound = (e: any) => {
+      const from = String(e?.from_address_email ?? '').toLowerCase();
+      const lead = String(e?.lead ?? '').toLowerCase();
+      const acct = String(e?.eaccount ?? '').toLowerCase();
+
+      // If sender matches lead and not the sending account, treat as inbound.
+      if (lead && from === lead && acct && from !== acct) return true;
+
+      // Fallback: if from is not the sending account, likely inbound.
+      if (acct && from && from !== acct) return true;
+      return false;
+    };
+
+    const parseMs = (e: any) => {
+      const raw = e?.timestamp_email ?? e?.timestamp_created;
+      const ms = raw ? new Date(String(raw)).getTime() : 0;
+      return Number.isFinite(ms) ? ms : 0;
+    };
+
+    for (let page = 1; page <= maxPages; page++) {
+      const data = await this.listEmails({ limit: 100, startingAfter });
+      const items: any[] = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
+      if (!items.length) break;
+
+      for (const e of items) {
+        if (!e) continue;
+        if (params.campaignId && String(e?.campaign_id ?? '') !== String(params.campaignId)) continue;
+        if (!isInbound(e)) continue;
+
+        const ms = parseMs(e);
+        if (startMs != null && ms && ms < startMs) {
+          // We’re iterating newest->older, so once we cross start date we can stop.
+          page = maxPages + 1;
+          break;
+        }
+        if (endMs != null && ms && ms > endMs) continue;
+
+        const messageHtml = e?.body?.html ?? '';
+        const message = messageHtml ? toPlain(String(messageHtml)).slice(0, 400) : null;
+
+        out.push({
+          platform: 'instantly',
+          clientId: params.clientId,
+          clientName: params.clientName,
+          category: 'replied',
+          campaignId: e?.campaign_id ? String(e.campaign_id) : null,
+          campaignName: null,
+          fullName: null,
+          email: e?.lead ? String(e.lead) : null,
+          replyDate: e?.timestamp_email ? String(e.timestamp_email) : (e?.timestamp_created ? String(e.timestamp_created) : null),
+          message,
+          sourceReplyId: e?.id ?? null,
+          sourceLeadId: null
+        });
+
+        if (out.length >= limit) break;
+      }
+
+      if (out.length >= limit) break;
+      startingAfter = data?.next_starting_after ? String(data.next_starting_after) : undefined;
+      if (!startingAfter) break;
+    }
+
+    // newest first
+    out.sort((a, b) => String(b.replyDate ?? '').localeCompare(String(a.replyDate ?? '')));
+    return out.slice(0, limit);
   }
 }
