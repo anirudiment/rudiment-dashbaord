@@ -298,6 +298,20 @@ export class InstantlyService {
     const out: ReplyLead[] = [];
     let startingAfter: string | undefined = undefined;
 
+    // Campaign name enrichment
+    const campaignNameById = new Map<string, string>();
+    try {
+      const campaigns = await this.getCampaigns();
+      for (const c of campaigns as any[]) {
+        const id = c?.id != null ? String(c.id) : (c?.campaign_id != null ? String(c.campaign_id) : null);
+        if (!id) continue;
+        const name = c?.name ?? c?.campaign_name;
+        if (name) campaignNameById.set(id, String(name));
+      }
+    } catch {
+      // ignore enrichment failures
+    }
+
     const toPlain = (html: string) =>
       String(html ?? '')
         .replace(/<style[\s\S]*?<\/style>/gi, ' ')
@@ -350,13 +364,16 @@ export class InstantlyService {
         const messageHtml = e?.body?.html ?? '';
         const message = messageHtml ? toPlain(String(messageHtml)).slice(0, 400) : null;
 
+        const campaignId = e?.campaign_id ? String(e.campaign_id) : null;
+        const campaignName = campaignId ? (campaignNameById.get(campaignId) || null) : null;
+
         out.push({
           platform: 'instantly',
           clientId: params.clientId,
           clientName: params.clientName,
           category: 'replied',
-          campaignId: e?.campaign_id ? String(e.campaign_id) : null,
-          campaignName: null,
+          campaignId,
+          campaignName,
           fullName: null,
           email: e?.lead ? String(e.lead) : null,
           replyDate: e?.timestamp_email ? String(e.timestamp_email) : (e?.timestamp_created ? String(e.timestamp_created) : null),

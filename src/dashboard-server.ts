@@ -735,6 +735,12 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
       try {
         const svc = new InstantlyService(config.platforms.instantly.apiKey);
 
+        // Align Instantly date-window behavior with /api/campaigns:
+        // Instantly UI “Last N days” excludes “today” and uses its own day boundary.
+        // For consistent results (replies list vs campaign reply count), shift endDate back 1 day.
+        const instEndDate = isLifetime ? endDate : addDaysYmd(endDate, -1);
+        const instStartDate = isLifetime ? startDate : addDaysYmd(instEndDate, -Number(days));
+
         // For now we support only “All Replies” from Unibox.
         // “Interested” lead list is plan-gated (/opportunities ERR_AUTH_FAILED),
         // so we return a warning.
@@ -748,7 +754,7 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
           } as any);
         }
 
-        const items = await svc.getReplyLeads({ clientId, clientName, startDate, endDate, limit });
+        const items = await svc.getReplyLeads({ clientId, clientName, startDate: instStartDate, endDate: instEndDate, limit });
 
         return sendJson(res, 200, { clientId, clientName, window: windowUsed, items } satisfies ClientRepliesResult);
       } catch (e: any) {
