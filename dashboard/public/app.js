@@ -381,7 +381,7 @@ function renderEmailCampaigns(campaigns) {
     // EmailBison: positive reply % is Interested / Unique Replies (called “Interested %” in UI).
     // Our API exposes it as `interestedRate` (0-100). Other platforms may not have it.
     const positiveReplyPct =
-      String(c.platform) === 'emailbison' && Number.isFinite(Number(c.interestedRate))
+      Number.isFinite(Number(c.interestedRate))
         ? fmtPct(Number(c.interestedRate))
         : '—';
     tr.innerHTML = `

@@ -278,6 +278,7 @@ async function fetchClientMetrics(params: {
   startDate?: string;
   endDate?: string;
   days?: number;
+  isLifetime?: boolean;
   status?: string;
   includeHeyReachStats?: boolean;
 }): Promise<ClientMetricsResult | null> {
@@ -323,6 +324,19 @@ async function fetchClientMetrics(params: {
     try {
       const svc = new InstantlyService(config.platforms.instantly.apiKey);
 
+      // Instantly UI “Last N days” appears to exclude “today” and uses a slightly different
+      // day-boundary than our Utah-inclusive window. This causes mismatches for short ranges
+      // (e.g. 7 days). To match Instantly UI, we shift the end date back by 1 day and compute
+      // startDate as (endDate - days).
+      const instEndDate =
+        params.isLifetime || !params.endDate
+          ? params.endDate
+          : addDaysYmd(params.endDate, -1);
+      const instStartDate =
+        params.isLifetime || !instEndDate || !Number.isFinite(Number(params.days))
+          ? params.startDate
+          : addDaysYmd(instEndDate, -Number(params.days));
+
       // Build campaign id set based on requested status
       const campaigns = await svc.getCampaigns();
       const ids = new Set(
@@ -348,8 +362,8 @@ async function fetchClientMetrics(params: {
 
       metrics.push(
         ...(await svc.getAllCampaignMetrics(clientName, {
-          startDate: params.startDate,
-          endDate: params.endDate,
+          startDate: instStartDate,
+          endDate: instEndDate,
           windowDays: params.days,
           activeCampaignIds: Array.from(ids)
         }))
@@ -659,7 +673,7 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
   if (reqUrl.pathname === '/api/summary') {
     const clientId = reqUrl.searchParams.get('clientId') || '';
     if (!clientId) return sendJson(res, 400, { error: 'Missing clientId' });
-    const data = await fetchClientMetrics({ clientId, startDate, endDate, days, status, includeHeyReachStats });
+    const data = await fetchClientMetrics({ clientId, startDate, endDate, days, isLifetime: !!isLifetime, status, includeHeyReachStats });
     if (!data) return sendJson(res, 404, { error: 'Unknown clientId' });
 
     const heyreachSummary = data.heyreachAggregate
@@ -790,7 +804,7 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
     const clientId = reqUrl.searchParams.get('clientId') || '';
     if (!clientId) return sendJson(res, 400, { error: 'Missing clientId' });
     const platform = reqUrl.searchParams.get('platform');
-    const data = await fetchClientMetrics({ clientId, startDate, endDate, days, status, includeHeyReachStats });
+    const data = await fetchClientMetrics({ clientId, startDate, endDate, days, isLifetime: !!isLifetime, status, includeHeyReachStats });
     if (!data) return sendJson(res, 404, { error: 'Unknown clientId' });
 
     const campaigns = data.metrics
@@ -899,7 +913,7 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
     const clientId = reqUrl.searchParams.get('clientId') || '';
     if (!clientId) return sendJson(res, 400, { error: 'Missing clientId' });
 
-    const data = await fetchClientMetrics({ clientId, startDate, endDate, days, status, includeHeyReachStats });
+    const data = await fetchClientMetrics({ clientId, startDate, endDate, days, isLifetime: !!isLifetime, status, includeHeyReachStats });
     if (!data) return sendJson(res, 404, { error: 'Unknown clientId' });
 
     // Fetch daily series for EmailBison campaigns and sum by day.

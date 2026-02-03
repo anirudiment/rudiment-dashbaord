@@ -165,16 +165,40 @@ export class InstantlyService {
   transformAnalyticsToMetrics(analytics: any): CampaignMetrics {
     const sent = Number(analytics?.emails_sent_count ?? 0);
     const bounced = Number(analytics?.bounced_count ?? 0);
-    const replied = Number(analytics?.reply_count ?? 0);
+
+    // Prefer human unique replies (exclude automatic replies) to match Instantly UI list:
+    // UI shows e.g. "28 | 2.6%" when analytics has reply_count_unique=30 and reply_count_automatic_unique=2.
+    const replyUnique = Number(analytics?.reply_count_unique ?? analytics?.reply_count ?? 0);
+    const replyAutoUnique = Number(analytics?.reply_count_automatic_unique ?? 0);
+    const replied = Math.max(0, replyUnique - replyAutoUnique);
     const opened = Number(analytics?.open_count ?? analytics?.open_count_unique ?? 0);
+    // Instantly UI calls this "Sequence started".
     const leadsTotal = Number(analytics?.leads_count ?? 0);
-    const leadsContacted = Number(analytics?.contacted_count ?? analytics?.new_leads_contacted_count ?? 0);
+
+    // For Instantly, we want Reply % like the Instantly UI list.
+    // Observed:
+    // - Lifetime UI seems to use replies / leads_count (sequence started)
+    // - Short ranges (e.g. last 7 days) appear to use replies / new_leads_contacted_count
+    //   (example: replies=2, reply_rate=2.5% implies denom=80)
+    // We approximate this by using new_leads_contacted_count when it exists and is non-zero;
+    // otherwise fall back to leads_count.
+    const newLeadsContacted = Number(analytics?.new_leads_contacted_count ?? 0);
+    const leadsContacted = Number.isFinite(newLeadsContacted) && newLeadsContacted > 0 ? newLeadsContacted : leadsTotal;
     const completed = Number(analytics?.completed_count ?? 0);
     const leadsRemaining = leadsTotal > 0 ? Math.max(0, leadsTotal - completed) : 0;
 
     // Instantly calls “Interested” as “Opportunities”.
     // In analytics payload we observed: total_opportunities, total_opportunity_value.
     const opportunities = Number(analytics?.total_opportunities ?? 0);
+
+    // Derive “positive reply %” as Opportunities / Replies.
+    const interestedRate = replied > 0 ? (opportunities / replied) * 100 : 0;
+
+    // Rate denominators:
+    // - Reply rate: per sequence started (leadsTotal)
+    // - Bounce/Open rate: per sent (classic email denominators)
+    const replyDenom = Number.isFinite(leadsContacted) && leadsContacted > 0 ? leadsContacted : (leadsTotal > 0 ? leadsTotal : sent);
+    const sentDenom = sent;
 
     return {
       campaignId: String(analytics?.campaign_id ?? ''),
@@ -189,9 +213,10 @@ export class InstantlyService {
       repliedCount: replied,
       openedCount: opened,
       interestedCount: Number.isFinite(opportunities) ? opportunities : 0,
-      bounceRate: sent > 0 ? (bounced / sent) * 100 : 0,
-      replyRate: sent > 0 ? (replied / sent) * 100 : 0,
-      openRate: sent > 0 ? (opened / sent) * 100 : 0,
+      interestedRate,
+      bounceRate: sentDenom > 0 ? (bounced / sentDenom) * 100 : 0,
+      replyRate: replyDenom > 0 ? (replied / replyDenom) * 100 : 0,
+      openRate: sentDenom > 0 ? (opened / sentDenom) * 100 : 0,
       sequenceDaysRemaining: 0,
       campaignDuration: 0,
       dailySendVolume: sent,
