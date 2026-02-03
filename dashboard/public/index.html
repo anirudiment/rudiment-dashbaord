@@ -11,7 +11,7 @@
       <div class="container header__row">
         <div class="header__left">
           <img class="header__logo" src="/rudiment-logo-white.png" alt="Rudiment" />
-          <div class="brand" id="pageTitle">Campaign Overview</div>
+          <!-- Task: remove “Campaign Overview” text from header (client is shown in dropdown) -->
         </div>
         <div class="controls">
           <select id="clientSelect" class="select" aria-label="Client"></select>
@@ -169,7 +169,14 @@
       <section class="panel" id="repliesPanel">
         <div class="panel__header">
           <div class="panel__title">Replies</div>
-          <div class="panel__hint">EmailBison (Send)</div>
+          <div class="panel__hint" id="repliesHint">—</div>
+        </div>
+
+        <div class="controls" style="margin: 10px 0 0;">
+          <select id="repliesPlatformSelect" class="select" aria-label="Replies platform">
+            <option value="emailbison" selected>EmailBison</option>
+            <option value="instantly">Instantly</option>
+          </select>
         </div>
 
         <div class="tabs" role="tablist" aria-label="Replies filters">

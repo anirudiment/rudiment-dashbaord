@@ -38,6 +38,12 @@ function setStatus(msg) {
 let refreshSeq = 0;
 
 let repliesFilter = 'replied';
+let repliesPlatform = 'emailbison';
+let repliesWarning = null;
+
+// Chart animation state (for smooth transitions between refreshes)
+let lastChartSeries = null;
+let chartAnimRaf = null;
 
 async function api(path) {
   const res = await fetch(path, { cache: 'no-store' });
@@ -76,6 +82,28 @@ function setRepliesTab(filter) {
   btnInterested.setAttribute('aria-selected', !isReplied ? 'true' : 'false');
 }
 
+function setRepliesPlatform(platform) {
+  repliesPlatform = String(platform || 'emailbison').toLowerCase();
+  const hint = $('repliesHint');
+  if (hint) {
+    hint.textContent = repliesPlatform === 'instantly' ? 'Instantly (Unibox)' : 'EmailBison (Send)';
+  }
+
+  // UX: if user switches to Instantly while being on Interested tab (from EmailBison),
+  // they end up seeing an empty state that looks like “All Replies missing”.
+  // Default Instantly to All Replies.
+  if (repliesPlatform === 'instantly' && repliesFilter === 'interested') {
+    setRepliesTab('replied');
+  }
+
+  // Interested is supported for Instantly via:
+  // - official opportunities (if scope exists)
+  // - heuristic fallback (if scope missing)
+  // so don't disable the tab.
+  const btnInterested = $('repliesTabInterested');
+  if (btnInterested) btnInterested.disabled = false;
+}
+
 function renderReplies(items) {
   const table = $('repliesTable');
   if (!table) return;
@@ -85,7 +113,10 @@ function renderReplies(items) {
 
   if (!rows.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td colspan="6" style="opacity:0.75;">No replies found for this range/filter.</td>`;
+    // Better UX: make Instantly limitations explicit.
+    let msg = 'No replies found for this range/filter.';
+    if (repliesWarning) msg = String(repliesWarning);
+    tr.innerHTML = `<td colspan="6" style="opacity:0.75;">${msg}</td>`;
     tbody.appendChild(tr);
     return;
   }
@@ -104,14 +135,73 @@ function renderReplies(items) {
   }
 }
 
-function drawChart(series) {
+function easeInOutCubic(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+function lerp(a, b, t) {
+  const aa = Number(a ?? 0);
+  const bb = Number(b ?? 0);
+  return aa + (bb - aa) * t;
+}
+
+function lerpSeries(from, to, t) {
+  const n = Math.min(from.length, to.length);
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = from[i] || {};
+    const b = to[i] || {};
+    out[i] = {
+      sent: lerp(a.sent, b.sent, t),
+      replied: lerp(a.replied, b.replied, t),
+      interested: lerp(a.interested, b.interested, t),
+      bounced: lerp(a.bounced, b.bounced, t)
+    };
+  }
+  return out;
+}
+
+function setChartSeries(next) {
+  const series = Array.isArray(next) ? next : [];
+
+  // First render or incompatible series length => jump (no animation)
+  if (!lastChartSeries || !Array.isArray(lastChartSeries) || lastChartSeries.length !== series.length) {
+    lastChartSeries = series;
+    drawChart(series);
+    return;
+  }
+
+  // Cancel any in-flight animation
+  if (chartAnimRaf) cancelAnimationFrame(chartAnimRaf);
+
+  const from = lastChartSeries;
+  const to = series;
+  const startedAt = performance.now();
+  const durationMs = 520;
+
+  const tick = (now) => {
+    const p = Math.min(1, (now - startedAt) / durationMs);
+    const t = easeInOutCubic(p);
+    drawChart(lerpSeries(from, to, t), { maxFrom: from, maxTo: to });
+    if (p < 1) chartAnimRaf = requestAnimationFrame(tick);
+    else {
+      chartAnimRaf = null;
+      lastChartSeries = to;
+      drawChart(to);
+    }
+  };
+
+  chartAnimRaf = requestAnimationFrame(tick);
+}
+
+function drawChart(series, opts) {
   const canvas = $('chart');
   const ctx = canvas.getContext('2d');
 
   const css = getComputedStyle(document.documentElement);
   const BLUE = (css.getPropertyValue('--blue') || '#0BD3F2').trim();
   const GREEN = (css.getPropertyValue('--green') || '#42EEB7').trim();
-  const BLACK = (css.getPropertyValue('--rudiment-black') || '#000000').trim();
+  const TEXT = (css.getPropertyValue('--text') || 'rgba(255, 255, 255, 0.92)').trim();
 
   // clear
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -127,13 +217,17 @@ function drawChart(series) {
   const w = canvas.width - padding * 2;
   const h = canvas.height - padding * 2;
 
+  // Keep y-scale stable during animation by considering both series.
+  const maxSeries = (s) => Math.max(1, ...s.map(d => Math.max(d.sent, d.replied, d.interested, d.bounced)));
   const maxVal = Math.max(
     1,
-    ...series.map(d => Math.max(d.sent, d.replied, d.interested, d.bounced))
+    maxSeries(series),
+    opts?.maxFrom ? maxSeries(opts.maxFrom) : 1,
+    opts?.maxTo ? maxSeries(opts.maxTo) : 1
   );
 
   // axes
-  ctx.strokeStyle = 'rgba(0,0,0,0.10)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(padding, padding);
@@ -141,35 +235,80 @@ function drawChart(series) {
   ctx.lineTo(padding + w, padding + h);
   ctx.stroke();
 
+  // subtle horizontal grid lines (adds depth like the reference)
+  ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+  ctx.lineWidth = 1;
+  for (const frac of [0.25, 0.5, 0.75]) {
+    const gy = padding + h - h * frac;
+    ctx.beginPath();
+    ctx.moveTo(padding, gy);
+    ctx.lineTo(padding + w, gy);
+    ctx.stroke();
+  }
+
   const x = (i) => padding + (i * w) / Math.max(1, series.length - 1);
   const y = (v) => padding + h - (v * h) / maxVal;
 
+  function smoothPath(values) {
+    const pts = (values || []).map((v, i) => ({ x: x(i), y: y(v) }));
+    if (pts.length === 0) return;
+    if (pts.length === 1) {
+      ctx.moveTo(pts[0].x, pts[0].y);
+      return;
+    }
+
+    // Smooth curves (Catmull–Rom -> Bezier).
+    // Lower tension => softer, more fluid curves.
+    const tension = 0.2;
+
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i - 1] || pts[i];
+      const p1 = pts[i];
+      const p2 = pts[i + 1];
+      const p3 = pts[i + 2] || p2;
+
+      const cp1x = p1.x + ((p2.x - p0.x) / 6) * (1 - tension);
+      const cp1y = p1.y + ((p2.y - p0.y) / 6) * (1 - tension);
+      const cp2x = p2.x - ((p3.x - p1.x) / 6) * (1 - tension);
+      const cp2y = p2.y - ((p3.y - p1.y) / 6) * (1 - tension);
+
+      ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+    }
+  }
+
   function line(values, color) {
+    // softer look like the reference screenshot
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+
     ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 3;
+
+    // subtle glow
+    ctx.shadowColor = `${color}55`;
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+
     ctx.beginPath();
-    values.forEach((v, i) => {
-      const xi = x(i);
-      const yi = y(v);
-      if (i === 0) ctx.moveTo(xi, yi);
-      else ctx.lineTo(xi, yi);
-    });
+    smoothPath(values);
     ctx.stroke();
+
+    // reset shadow so other elements (legend) stay crisp
+    ctx.shadowBlur = 0;
   }
 
   function area(values, color) {
     const grad = ctx.createLinearGradient(0, padding, 0, padding + h);
-    grad.addColorStop(0, `${color}33`); // ~20% alpha
+    // Multi-stop gradient for a softer fill
+    grad.addColorStop(0, `${color}40`);   // ~25% alpha
+    grad.addColorStop(0.55, `${color}14`); // ~8% alpha
     grad.addColorStop(1, `${color}00`);
 
     ctx.fillStyle = grad;
     ctx.beginPath();
-    values.forEach((v, i) => {
-      const xi = x(i);
-      const yi = y(v);
-      if (i === 0) ctx.moveTo(xi, yi);
-      else ctx.lineTo(xi, yi);
-    });
+    smoothPath(values);
     // close shape to x-axis
     ctx.lineTo(x(values.length - 1), padding + h);
     ctx.lineTo(x(0), padding + h);
@@ -181,15 +320,33 @@ function drawChart(series) {
   area(sentVals, BLUE);
   line(sentVals, BLUE);        // sent
   line(series.map(d => d.replied), GREEN);     // replied
-  line(series.map(d => d.interested), BLACK);  // interested
+  line(series.map(d => d.interested), TEXT);  // interested
   line(series.map(d => d.bounced), '#ef4444');     // bounced (keep red for clarity)
+
+  // point markers (soft + subtle)
+  function points(values, color) {
+    const pts = (values || []).map((v, i) => ({ x: x(i), y: y(v) }));
+    // Make dots barely visible (or effectively off) to reduce noise.
+    // If you want them fully removed, we can delete this call entirely.
+    ctx.fillStyle = `${color}1f`; // ~12% alpha
+    for (const p of pts) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 2.25, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  points(sentVals, BLUE);
+  points(series.map(d => d.replied), GREEN);
+  points(series.map(d => d.interested), TEXT);
+  points(series.map(d => d.bounced), '#ef4444');
 
   // legend
   ctx.font = '12px system-ui';
   const legend = [
     ['Sent', BLUE],
     ['Replied', GREEN],
-    ['Interested', BLACK],
+    ['Interested', TEXT],
     ['Bounced', '#ef4444']
   ];
   let lx = padding;
@@ -197,7 +354,7 @@ function drawChart(series) {
   legend.forEach(([label, color]) => {
     ctx.fillStyle = color;
     ctx.fillRect(lx, ly - 9, 10, 10);
-    ctx.fillStyle = '#000000';
+    ctx.fillStyle = TEXT;
     ctx.fillText(label, lx + 14, ly);
     lx += 90;
   });
@@ -292,12 +449,6 @@ async function loadClients() {
 
   // Apply theme for the default-selected client.
   applyClientTheme(select.value);
-
-  // Set header for default client.
-  const active = clients.find(x => x.id === select.value);
-  if (active) {
-    $('pageTitle').textContent = active?.name ? `Campaign Overview for ${active.name}` : 'Campaign Overview';
-  }
 }
 
 async function refresh() {
@@ -307,10 +458,6 @@ async function refresh() {
   if (!clientId) return;
 
   const seq = ++refreshSeq;
-
-  // Update header immediately from selected option.
-  const selectedName = $('clientSelect')?.selectedOptions?.[0]?.textContent;
-  $('pageTitle').textContent = selectedName ? `Campaign Overview for ${selectedName}` : 'Campaign Overview';
 
   applyClientTheme(clientId);
 
@@ -324,14 +471,11 @@ async function refresh() {
       api(`/api/campaigns?clientId=${encodeURIComponent(clientId)}&days=${encodeURIComponent(days)}&status=${encodeURIComponent(status)}`),
       // timeseries remains EmailBison-focused; still filter by status for consistency
       api(`/api/timeseries?clientId=${encodeURIComponent(clientId)}&days=${encodeURIComponent(days)}&status=${encodeURIComponent(status)}`),
-      api(`/api/replies?clientId=${encodeURIComponent(clientId)}&platform=emailbison&filter=${encodeURIComponent(repliesFilter)}&days=${encodeURIComponent(days)}&status=${encodeURIComponent(status)}&limit=50`)
+      api(`/api/replies?clientId=${encodeURIComponent(clientId)}&platform=${encodeURIComponent(repliesPlatform)}&filter=${encodeURIComponent(repliesFilter)}&days=${encodeURIComponent(days)}&status=${encodeURIComponent(status)}&limit=50`)
     ]);
 
     // If a newer refresh started after this one, ignore these results.
     if (seq !== refreshSeq) return;
-
-    // Update header
-    $('pageTitle').textContent = campaigns?.clientName ? `Campaign Overview for ${campaigns.clientName}` : 'Campaign Overview';
 
     const s = summary.summary;
     $('sent').textContent = fmtInt(s.totals.sent);
@@ -367,8 +511,9 @@ async function refresh() {
     renderHeyReachCampaigns(campaigns.campaigns);
 
     $('rangeHint').textContent = `${series.startDate} → ${series.endDate}`;
-    drawChart(series.series);
+    setChartSeries(series.series);
 
+    repliesWarning = replies?.warning ?? null;
     renderReplies(replies.items);
 
     // Hint when HeyReach per-campaign stats are warming up.
@@ -400,6 +545,15 @@ async function main() {
   if (btnReplied && btnInterested) {
     btnReplied.addEventListener('click', () => { setRepliesTab('replied'); refresh(); });
     btnInterested.addEventListener('click', () => { setRepliesTab('interested'); refresh(); });
+  }
+
+  // Replies platform selector
+  const plat = $('repliesPlatformSelect');
+  if (plat) {
+    setRepliesPlatform(plat.value);
+    plat.addEventListener('change', () => { setRepliesPlatform(plat.value); refresh(); });
+  } else {
+    setRepliesPlatform('emailbison');
   }
 
   setRepliesTab('replied');
