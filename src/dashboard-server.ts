@@ -791,9 +791,10 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
 
       const dealAmountRaw = body?.dealAmount;
       // Accept numbers or currency-like strings ("$12,345", "US$12,345", etc.)
-      const dealAmountStr = dealAmountRaw == null ? '' : String(dealAmountRaw);
-      const dealAmountNum = Number(dealAmountStr.replace(/[^0-9.\-]/g, ''));
-      const dealAmount = Number.isFinite(dealAmountNum) ? dealAmountNum : null;
+      // Be careful: Number(null) === 0, so treat null/undefined/empty as null.
+      const dealAmountStr = dealAmountRaw == null ? '' : String(dealAmountRaw).trim();
+      const cleaned = dealAmountStr.replace(/[^0-9.\-]/g, '');
+      const dealAmount = cleaned ? (Number.isFinite(Number(cleaned)) ? Number(cleaned) : null) : null;
       const dealStage = body?.dealStage != null ? String(body.dealStage) : null;
       const updatedAt = body?.updatedAt != null ? String(body.updatedAt) : new Date().toISOString();
 
