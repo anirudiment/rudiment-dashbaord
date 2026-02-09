@@ -9,9 +9,16 @@ import { EmailBisonService } from './services/emailbison.service';
 import { HeyReachService } from './services/heyreach.service';
 import { InstantlyService } from './services/instantly.service';
 import { CampaignMetrics, ReplyLead } from './types';
+import { ClayAttributionStore } from './services/clay-attribution.store';
 import { getUtahLastNDaysRange, listDaysInclusive, addDaysYmd } from './utils/utahTime';
 
 dotenv.config();
+
+// Clay pipeline attribution (file-backed store)
+const clayAttributionStore = new ClayAttributionStore({
+  filePath: process.env.CLAY_ATTRIBUTION_STORE_PATH
+});
+clayAttributionStore.init().catch(() => null);
 
 type ClientMetricsResult = {
   clientId: string;
@@ -251,6 +258,22 @@ function sendText(res: http.ServerResponse, status: number, body: string) {
     'Cache-Control': 'no-store'
   });
   res.end(body);
+}
+
+function getRawBody(req: http.IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', chunk => {
+      data += chunk;
+      // basic guard to avoid huge payloads
+      if (data.length > 2_000_000) {
+        reject(new Error('Payload too large'));
+        try { req.destroy(); } catch {}
+      }
+    });
+    req.on('end', () => resolve(data));
+    req.on('error', reject);
+  });
 }
 
 function parseDateRange(searchParams: URLSearchParams) {
@@ -670,6 +693,57 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
     return sendJson(res, 200, { clients: activeClients });
   }
 
+  // Clay pipeline attribution webhook receiver.
+  // Clay should POST:
+  // {
+  //   "clientId": "client2",
+  //   "email": "person@company.com",
+  //   "dealAmount": 10000,
+  //   "dealStage": "7 - Agreement Signed/Payment Received",
+  //   "updatedAt": "2026-02-09T...Z"
+  // }
+  // Protect with header: x-clay-secret: <CLAY_WEBHOOK_SECRET>
+  if (reqUrl.pathname === '/api/clay/attribution') {
+    if ((req.method || 'GET').toUpperCase() !== 'POST') {
+      return sendJson(res, 405, { error: 'Method not allowed' });
+    }
+
+    const expected = String(process.env.CLAY_WEBHOOK_SECRET ?? '').trim();
+    if (!expected) {
+      return sendJson(res, 500, { error: 'CLAY_WEBHOOK_SECRET is not configured on server' });
+    }
+    const provided = String(req.headers['x-clay-secret'] ?? '').trim();
+    if (provided !== expected) {
+      return sendJson(res, 401, { error: 'Unauthorized' });
+    }
+
+    try {
+      const raw = await getRawBody(req);
+      const body = raw ? JSON.parse(raw) : {};
+
+      const clientId = String(body?.clientId ?? '').trim();
+      const email = String(body?.email ?? '').trim();
+      if (!clientId || !email) {
+        return sendJson(res, 400, { error: 'Missing clientId or email' });
+      }
+
+      // Scope: only client2 (Business Bricks) for now.
+      if (clientId !== 'client2') {
+        return sendJson(res, 400, { error: 'Unsupported clientId (only client2 supported for now)' });
+      }
+
+      const dealAmountRaw = body?.dealAmount;
+      const dealAmount = Number.isFinite(Number(dealAmountRaw)) ? Number(dealAmountRaw) : null;
+      const dealStage = body?.dealStage != null ? String(body.dealStage) : null;
+      const updatedAt = body?.updatedAt != null ? String(body.updatedAt) : new Date().toISOString();
+
+      clayAttributionStore.upsert({ clientId, email, dealAmount, dealStage, updatedAt });
+      return sendJson(res, 200, { ok: true });
+    } catch (e: any) {
+      return sendJson(res, 400, { error: e?.message ?? String(e) });
+    }
+  }
+
   if (reqUrl.pathname === '/api/summary') {
     const clientId = reqUrl.searchParams.get('clientId') || '';
     if (!clientId) return sendJson(res, 400, { error: 'Missing clientId' });
@@ -721,7 +795,17 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
             ? await svc.getInterestedReplyLeads({ clientId, clientName, startDate, endDate, limit })
             : await svc.getReplyLeads({ clientId, clientName, startDate, endDate, limit });
 
-        return sendJson(res, 200, { clientId, clientName, window: windowUsed, items } satisfies ClientRepliesResult);
+        // Enrich with Clay attribution (Business Bricks only for now)
+        const enriched = items.map((it: ReplyLead) => {
+          const a = clayAttributionStore.get(clientId, it.email ?? null);
+          if (!a) return it;
+          return {
+            ...it,
+            dealAmount: a.dealAmount ?? null,
+            dealStage: a.dealStage ?? null
+          };
+        });
+        return sendJson(res, 200, { clientId, clientName, window: windowUsed, items: enriched } satisfies ClientRepliesResult);
       } catch (e: any) {
         return sendJson(res, 500, { error: e?.message ?? String(e) });
       }
@@ -756,7 +840,18 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
 
         const items = await svc.getReplyLeads({ clientId, clientName, startDate: instStartDate, endDate: instEndDate, limit });
 
-        return sendJson(res, 200, { clientId, clientName, window: windowUsed, items } satisfies ClientRepliesResult);
+        // Enrich with Clay attribution (Business Bricks only for now)
+        const enriched = items.map((it: ReplyLead) => {
+          const a = clayAttributionStore.get(clientId, it.email ?? null);
+          if (!a) return it;
+          return {
+            ...it,
+            dealAmount: a.dealAmount ?? null,
+            dealStage: a.dealStage ?? null
+          };
+        });
+
+        return sendJson(res, 200, { clientId, clientName, window: windowUsed, items: enriched } satisfies ClientRepliesResult);
       } catch (e: any) {
         return sendJson(res, 500, { error: e?.message ?? String(e) });
       }

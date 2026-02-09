@@ -89,6 +89,10 @@ export interface ReplyLead {
   /** Reply content preview (if available). */
   message?: string | null;
 
+  /** Pipeline attribution (best-effort, from Clay/CRM). */
+  dealAmount?: number | null;
+  dealStage?: string | null;
+
   /** Raw ids for debugging / future joins. */
   sourceReplyId?: string | number | null;
   sourceLeadId?: string | number | null;

@@ -29,6 +29,16 @@ function fmtPct(n) {
   return `${num.toFixed(1)}%`;
 }
 
+function fmtUsd(n) {
+  const num = Number(n);
+  if (!Number.isFinite(num)) return '—';
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: 0
+  }).format(num);
+}
+
 function setStatus(msg) {
   $('status').textContent = msg;
 }
@@ -116,7 +126,7 @@ function renderReplies(items) {
     // Better UX: make Instantly limitations explicit.
     let msg = 'No replies found for this range/filter.';
     if (repliesWarning) msg = String(repliesWarning);
-    tr.innerHTML = `<td colspan="6" style="opacity:0.75;">${msg}</td>`;
+    tr.innerHTML = `<td colspan="8" style="opacity:0.75;">${msg}</td>`;
     tbody.appendChild(tr);
     return;
   }
@@ -130,6 +140,8 @@ function renderReplies(items) {
       <td>${shorten(r.campaignName || r.campaignId || '—', 40)}</td>
       <td>${fmtDateTime(r.replyDate)}</td>
       <td title="${String(r.message || '').replace(/\"/g, '&quot;')}">${shorten(r.message || '—', 140)}</td>
+      <td>${fmtUsd(r.dealAmount)}</td>
+      <td>${shorten(r.dealStage || '—', 44)}</td>
     `;
     tbody.appendChild(tr);
   }
