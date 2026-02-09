@@ -15,8 +15,7 @@
     "report:client": "tsx src/report-client.ts",
     "report:slack": "tsx src/report-to-slack.ts",
     "lambda:zip": "npm run build && rm -rf lambda && mkdir -p lambda && cp package.json package-lock.json lambda/ && cp -R dist lambda/dist && npm ci --omit=dev --prefix lambda && cd lambda && zip -qr ../lambda.zip .",
-    "test-emailbison": "tsx src/test-emailbison.ts"
-    ,
+    "test-emailbison": "tsx src/test-emailbison.ts",
     "preview:asana": "tsx src/test-asana-mcp-preview.ts"
   },
   "keywords": [
@@ -28,6 +27,8 @@
   "author": "Rudiment",
   "license": "MIT",
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.958.0",
+    "@aws-sdk/lib-dynamodb": "^3.958.0",
     "@slack/webhook": "^7.0.1",
     "axios": "^1.6.2",
     "dotenv": "^16.3.1",

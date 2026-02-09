@@ -10,15 +10,31 @@ import { HeyReachService } from './services/heyreach.service';
 import { InstantlyService } from './services/instantly.service';
 import { CampaignMetrics, ReplyLead } from './types';
 import { ClayAttributionStore } from './services/clay-attribution.store';
+import { DynamoClayAttributionStore } from './services/clay-attribution-ddb.store';
 import { getUtahLastNDaysRange, listDaysInclusive, addDaysYmd } from './utils/utahTime';
 
 dotenv.config();
 
-// Clay pipeline attribution (file-backed store)
-const clayAttributionStore = new ClayAttributionStore({
-  filePath: process.env.CLAY_ATTRIBUTION_STORE_PATH
-});
+// Clay pipeline attribution (DynamoDB in prod if configured; file-backed fallback for local dev)
+const clayDdbTable = String(process.env.CLAY_ATTRIBUTION_DDB_TABLE ?? '').trim();
+const clayAttributionStore: {
+  init(): Promise<void>;
+  get(clientId: string, email?: string | null): any;
+  getMany?: (clientId: string, emails: Array<string | null | undefined>) => Promise<Map<string, any>>;
+  upsert(record: any): any;
+} = clayDdbTable
+  ? new DynamoClayAttributionStore({
+      tableName: clayDdbTable,
+      region: process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION
+    })
+  : new ClayAttributionStore({
+      filePath: process.env.CLAY_ATTRIBUTION_STORE_PATH
+    });
 clayAttributionStore.init().catch(() => null);
+
+// Small helper so the server can treat sync/async stores uniformly.
+const clayStoreGet = async (clientId: string, email?: string | null) =>
+  await Promise.resolve(clayAttributionStore.get(clientId, email));
 
 type ClientMetricsResult = {
   clientId: string;
@@ -696,6 +712,44 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
     return sendJson(res, 200, { clients: activeClients });
   }
 
+  const enrichReplyLeadsWithClay = async (clientId: string, items: ReplyLead[]) => {
+    if (!items.length) return items;
+
+    const emails = items.map(i => i.email).filter(Boolean) as string[];
+
+    // Batch path for Dynamo store
+    const getMany = clayAttributionStore.getMany;
+    if (typeof getMany === 'function') {
+      try {
+        const byEmail = await getMany(clientId, emails);
+        return items.map(it => {
+          const key = String(it.email ?? '').trim().toLowerCase();
+          const a = key ? byEmail.get(key) : null;
+          if (!a) return it;
+          return {
+            ...it,
+            dealAmount: a.dealAmount ?? null,
+            dealStage: a.dealStage ?? null
+          };
+        });
+      } catch {
+        // fall back to no enrichment
+        return items;
+      }
+    }
+
+    // Legacy file-backed sync store
+    return items.map(it => {
+      const a = clayAttributionStore.get(clientId, it.email ?? null);
+      if (!a) return it;
+      return {
+        ...it,
+        dealAmount: a.dealAmount ?? null,
+        dealStage: a.dealStage ?? null
+      };
+    });
+  };
+
   // Clay pipeline attribution webhook receiver.
   // Clay should POST:
   // {
@@ -736,11 +790,14 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
       }
 
       const dealAmountRaw = body?.dealAmount;
-      const dealAmount = Number.isFinite(Number(dealAmountRaw)) ? Number(dealAmountRaw) : null;
+      // Accept numbers or currency-like strings ("$12,345", "US$12,345", etc.)
+      const dealAmountStr = dealAmountRaw == null ? '' : String(dealAmountRaw);
+      const dealAmountNum = Number(dealAmountStr.replace(/[^0-9.\-]/g, ''));
+      const dealAmount = Number.isFinite(dealAmountNum) ? dealAmountNum : null;
       const dealStage = body?.dealStage != null ? String(body.dealStage) : null;
       const updatedAt = body?.updatedAt != null ? String(body.updatedAt) : new Date().toISOString();
 
-      clayAttributionStore.upsert({ clientId, email, dealAmount, dealStage, updatedAt });
+      await Promise.resolve(clayAttributionStore.upsert({ clientId, email, dealAmount, dealStage, updatedAt }));
       return sendJson(res, 200, { ok: true });
     } catch (e: any) {
       return sendJson(res, 400, { error: e?.message ?? String(e) });
@@ -802,16 +859,7 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
 
         const items = paged.items;
 
-        // Enrich with Clay attribution (Business Bricks only for now)
-        const enriched = items.map((it: ReplyLead) => {
-          const a = clayAttributionStore.get(clientId, it.email ?? null);
-          if (!a) return it;
-          return {
-            ...it,
-            dealAmount: a.dealAmount ?? null,
-            dealStage: a.dealStage ?? null
-          };
-        });
+        const enriched = await enrichReplyLeadsWithClay(clientId, items);
         return sendJson(res, 200, {
           clientId,
           clientName,
@@ -855,16 +903,7 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
 
         const items = await svc.getReplyLeads({ clientId, clientName, startDate: instStartDate, endDate: instEndDate, limit });
 
-        // Enrich with Clay attribution (Business Bricks only for now)
-        const enriched = items.map((it: ReplyLead) => {
-          const a = clayAttributionStore.get(clientId, it.email ?? null);
-          if (!a) return it;
-          return {
-            ...it,
-            dealAmount: a.dealAmount ?? null,
-            dealStage: a.dealStage ?? null
-          };
-        });
+        const enriched = await enrichReplyLeadsWithClay(clientId, items);
 
         return sendJson(res, 200, { clientId, clientName, window: windowUsed, items: enriched } satisfies ClientRepliesResult);
       } catch (e: any) {

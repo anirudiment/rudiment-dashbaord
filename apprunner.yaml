@@ -14,6 +14,12 @@ run:
   env:
     - name: NODE_ENV
       value: production
+    # Clay pipeline attribution
+    # Uses DynamoDB when set (required for autoscaling >1 instance)
+    - name: CLAY_ATTRIBUTION_DDB_TABLE
+      value: rudiment_clay_attribution
+    - name: AWS_REGION
+      value: us-east-1
     # Some App Runner configurations do not inject PORT automatically.
     # Our server now defaults to 8080 in production, but set PORT explicitly as well.
     - name: PORT
