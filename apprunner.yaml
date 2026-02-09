@@ -14,4 +14,8 @@ run:
   env:
     - name: NODE_ENV
       value: production
+    # Some App Runner configurations do not inject PORT automatically.
+    # Our server now defaults to 8080 in production, but set PORT explicitly as well.
+    - name: PORT
+      value: 8080
 
