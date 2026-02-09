@@ -32,6 +32,9 @@ type ClientRepliesResult = {
   clientName: string;
   window: { days: number; startDate: string; endDate: string; status: string; isLifetime: boolean };
   items: ReplyLead[];
+  page?: number;
+  perPage?: number;
+  hasMore?: boolean;
 };
 
 type CacheEntry<T> = { expiresAt: number; value: T };
@@ -772,6 +775,8 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
     const platform = (reqUrl.searchParams.get('platform') || 'emailbison').toLowerCase();
     const filter = (reqUrl.searchParams.get('filter') || 'replied').toLowerCase();
     const limit = Math.max(1, Math.min(200, Number(reqUrl.searchParams.get('limit') || '50')));
+    const perPage = Math.max(1, Math.min(200, Number(reqUrl.searchParams.get('perPage') || String(limit || 50))));
+    const page = Math.max(1, Math.min(50, Number(reqUrl.searchParams.get('page') || '1')));
 
     const activeClients = getActiveClients();
     const entry = activeClients.find(c => c.id === clientId);
@@ -790,10 +795,12 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
 
       try {
         const svc = new EmailBisonService(config.platforms.emailbison.apiKey);
-        const items =
+        const paged =
           filter === 'interested'
-            ? await svc.getInterestedReplyLeads({ clientId, clientName, startDate, endDate, limit })
-            : await svc.getReplyLeads({ clientId, clientName, startDate, endDate, limit });
+            ? await svc.getInterestedReplyLeadsPage({ clientId, clientName, startDate, endDate, limit, page, perPage })
+            : await svc.getReplyLeadsPage({ clientId, clientName, startDate, endDate, limit, page, perPage });
+
+        const items = paged.items;
 
         // Enrich with Clay attribution (Business Bricks only for now)
         const enriched = items.map((it: ReplyLead) => {
@@ -805,7 +812,15 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
             dealStage: a.dealStage ?? null
           };
         });
-        return sendJson(res, 200, { clientId, clientName, window: windowUsed, items: enriched } satisfies ClientRepliesResult);
+        return sendJson(res, 200, {
+          clientId,
+          clientName,
+          window: windowUsed,
+          page,
+          perPage,
+          hasMore: paged.hasMore,
+          items: enriched
+        } satisfies ClientRepliesResult);
       } catch (e: any) {
         return sendJson(res, 500, { error: e?.message ?? String(e) });
       }

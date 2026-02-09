@@ -184,6 +184,14 @@
           <button class="tab" id="repliesTabInterested" data-filter="interested" role="tab" aria-selected="false">Interested</button>
         </div>
 
+        <div class="controls" style="margin: 10px 0 0; justify-content: space-between;">
+          <div style="display:flex; gap: 8px; align-items:center;">
+            <button id="repliesPrevBtn" class="btn" style="padding: 8px 12px;">Newer</button>
+            <button id="repliesNextBtn" class="btn" style="padding: 8px 12px;">Older</button>
+            <span id="repliesPageHint" style="opacity:0.75; font-size: 12px;"></span>
+          </div>
+        </div>
+
         <div class="tableWrap">
           <table class="table" id="repliesTable">
             <thead>

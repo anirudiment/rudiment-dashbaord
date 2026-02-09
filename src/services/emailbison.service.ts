@@ -366,6 +366,8 @@ export class EmailBisonService {
   private async fetchRepliesPaged(params: {
     perPage: number;
     maxPages: number;
+    /** 1-indexed */
+    startPage?: number;
     stopBeforeDate?: string; // YYYY-MM-DD
   }): Promise<any[]> {
     const perPage = Math.max(1, Math.min(200, Number(params.perPage)));
@@ -373,7 +375,8 @@ export class EmailBisonService {
     const stopBeforeMs = params.stopBeforeDate ? new Date(`${params.stopBeforeDate}T00:00:00.000Z`).getTime() : null;
 
     const out: any[] = [];
-    for (let page = 1; page <= maxPages; page++) {
+    const startPage = Math.max(1, Number(params.startPage ?? 1));
+    for (let page = startPage; page <= startPage + maxPages - 1; page++) {
       const res = await this.client.get('/api/replies', { params: { per_page: perPage, page } });
       const rows: any[] = Array.isArray(res.data?.data) ? res.data.data : [];
       if (!rows.length) break;
@@ -386,6 +389,66 @@ export class EmailBisonService {
       }
     }
     return out;
+  }
+
+  /**
+   * Fetch a page of replies AFTER applying noise/automation filters.
+   *
+   * Why: the Send API returns newest-first pages and may include many non-human/system replies
+   * (DMARC, bounces, outgoing, etc.). If we paginate raw pages first, page 1 can be "empty"
+   * after filtering, which looks like the dashboard is broken.
+   *
+   * Strategy:
+   * - walk raw pages from `startPage` forward
+   * - apply `include` predicate
+   * - collect until we have `perPage` items or we hit `maxRawPages`
+   */
+  private async fetchFilteredRepliesPage(params: {
+    perPage: number;
+    page: number;
+    maxRawPages?: number;
+    stopBeforeDate?: string;
+    include: (r: any) => boolean;
+  }): Promise<{ rows: any[]; hasMore: boolean }> {
+    const perPage = Math.max(1, Math.min(200, Number(params.perPage)));
+    const page = Math.max(1, Math.min(1000, Number(params.page)));
+    const maxRawPages = Math.max(1, Math.min(50, Number(params.maxRawPages ?? 20)));
+
+    const collected: any[] = [];
+    let rawPage = page;
+    let hasMore = false;
+
+    for (let i = 0; i < maxRawPages; i++) {
+      const raw = await this.fetchRepliesPaged({
+        perPage,
+        startPage: rawPage,
+        maxPages: 1,
+        stopBeforeDate: params.stopBeforeDate
+      });
+
+      if (!raw.length) {
+        hasMore = false;
+        break;
+      }
+
+      for (const r of raw) {
+        if (!params.include(r)) continue;
+        collected.push(r);
+        if (collected.length >= perPage) break;
+      }
+
+      // If we filled, there's *probably* more after this rawPage.
+      if (collected.length >= perPage) {
+        hasMore = true;
+        break;
+      }
+
+      // otherwise keep going to next raw page
+      rawPage += 1;
+      hasMore = true;
+    }
+
+    return { rows: collected.slice(0, perPage), hasMore };
   }
 
   /**
@@ -407,22 +470,49 @@ export class EmailBisonService {
     campaignId?: number | string;
     limit?: number;
     includeAutomated?: boolean;
+    /** 1-indexed page for dashboard pagination (applies before filtering). */
+    page?: number;
+    /** Page size. Defaults to 50. */
+    perPage?: number;
   }): Promise<ReplyLead[]> {
+    const { items } = await this.getInterestedReplyLeadsPage(params);
+    return items;
+  }
+
+  /**
+   * Same as getInterestedReplyLeads, but returns paging metadata.
+   */
+  async getInterestedReplyLeadsPage(params: {
+    clientId: string;
+    clientName: string;
+    startDate?: string;
+    endDate?: string;
+    campaignId?: number | string;
+    limit?: number;
+    includeAutomated?: boolean;
+    page?: number;
+    perPage?: number;
+  }): Promise<{ items: ReplyLead[]; hasMore: boolean }> {
     const limit = Math.max(1, Math.min(200, Number(params.limit ?? 50)));
     const windowStart = params.startDate;
 
-    // Paginate for up to ~1k replies (20 pages * 50).
-    // Then filter client-side because server-side interested/start_date filters appear unreliable.
-    const replies: any[] = await this.fetchRepliesPaged({ perPage: 50, maxPages: 20, stopBeforeDate: windowStart });
+    const perPage = Math.max(1, Math.min(200, Number(params.perPage ?? 50)));
+    const page = Math.max(1, Math.min(50, Number(params.page ?? 1)));
 
     const isInterested = (v: any) => v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true';
 
-    const filtered = replies.filter(r => {
-      if (!r) return false;
-      if (!isInterested(r.interested)) return false;
-      if (!params.includeAutomated && r.automated_reply) return false;
-      // NOTE: do NOT require lead_id here; some replies may not be joined even though they're marked interested.
-      return true;
+    // Fetch a page of replies after filtering to avoid empty pages caused by noisy/system replies.
+    const { rows: filtered, hasMore } = await this.fetchFilteredRepliesPage({
+      perPage,
+      page,
+      stopBeforeDate: windowStart,
+      include: (r: any) => {
+        if (!r) return false;
+        if (!isInterested(r.interested)) return false;
+        if (!params.includeAutomated && r.automated_reply) return false;
+        // NOTE: do NOT require lead_id here; some replies may not be joined even though they're marked interested.
+        return true;
+      }
     });
 
     // De-dupe lead fetches (best-effort)
@@ -502,7 +592,7 @@ export class EmailBisonService {
 
     // newest first
     out.sort((a, b) => String(b.replyDate ?? '').localeCompare(String(a.replyDate ?? '')));
-    return out.slice(0, limit);
+    return { items: out.slice(0, limit), hasMore };
   }
 
   /**
@@ -519,9 +609,32 @@ export class EmailBisonService {
     campaignId?: number | string;
     limit?: number;
     includeAutomated?: boolean;
+    /** 1-indexed page for dashboard pagination (applies before filtering). */
+    page?: number;
+    /** Page size. Defaults to 50. */
+    perPage?: number;
   }): Promise<ReplyLead[]> {
+    const { items } = await this.getReplyLeadsPage(params);
+    return items;
+  }
+
+  /**
+   * Same as getReplyLeads, but returns paging metadata.
+   */
+  async getReplyLeadsPage(params: {
+    clientId: string;
+    clientName: string;
+    startDate?: string;
+    endDate?: string;
+    campaignId?: number | string;
+    limit?: number;
+    includeAutomated?: boolean;
+    page?: number;
+    perPage?: number;
+  }): Promise<{ items: ReplyLead[]; hasMore: boolean }> {
     const limit = Math.max(1, Math.min(200, Number(params.limit ?? 50)));
-    const replies: any[] = await this.fetchRepliesPaged({ perPage: 50, maxPages: 20, stopBeforeDate: params.startDate });
+    const perPage = Math.max(1, Math.min(200, Number(params.perPage ?? 50)));
+    const page = Math.max(1, Math.min(50, Number(params.page ?? 1)));
 
     const isSystemOrNoise = (r: any) => {
       const type = String(r?.type ?? '').toLowerCase();
@@ -542,12 +655,17 @@ export class EmailBisonService {
       return false;
     };
 
-    const filtered = replies.filter(r => {
-      if (!r) return false;
-      if (!params.includeAutomated && r.automated_reply) return false;
-      // Remove noise from “All Replies” view
-      if (isSystemOrNoise(r)) return false;
-      return true;
+    // Fetch a page of replies after filtering to avoid empty pages.
+    const { rows: filtered, hasMore } = await this.fetchFilteredRepliesPage({
+      perPage,
+      page,
+      stopBeforeDate: params.startDate,
+      include: (r: any) => {
+        if (!r) return false;
+        if (!params.includeAutomated && r.automated_reply) return false;
+        if (isSystemOrNoise(r)) return false;
+        return true;
+      }
     });
 
     const uniqueLeadIds = Array.from(
@@ -626,6 +744,6 @@ export class EmailBisonService {
     }
 
     out.sort((a, b) => String(b.replyDate ?? '').localeCompare(String(a.replyDate ?? '')));
-    return out.slice(0, limit);
+    return { items: out.slice(0, limit), hasMore };
   }
 }

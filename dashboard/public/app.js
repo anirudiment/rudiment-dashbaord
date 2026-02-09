@@ -50,6 +50,8 @@ let refreshSeq = 0;
 let repliesFilter = 'replied';
 let repliesPlatform = 'emailbison';
 let repliesWarning = null;
+let repliesPage = 1;
+let repliesHasMore = false;
 
 // Chart animation state (for smooth transitions between refreshes)
 let lastChartSeries = null;
@@ -81,6 +83,7 @@ function shorten(text, n) {
 
 function setRepliesTab(filter) {
   repliesFilter = filter;
+  repliesPage = 1;
   const btnReplied = $('repliesTabReplied');
   const btnInterested = $('repliesTabInterested');
   if (!btnReplied || !btnInterested) return;
@@ -94,6 +97,7 @@ function setRepliesTab(filter) {
 
 function setRepliesPlatform(platform) {
   repliesPlatform = String(platform || 'emailbison').toLowerCase();
+  repliesPage = 1;
   const hint = $('repliesHint');
   if (hint) {
     hint.textContent = repliesPlatform === 'instantly' ? 'Instantly (Unibox)' : 'EmailBison (Send)';
@@ -145,6 +149,16 @@ function renderReplies(items) {
     `;
     tbody.appendChild(tr);
   }
+}
+
+function updateRepliesPagerUI() {
+  const prev = $('repliesPrevBtn');
+  const next = $('repliesNextBtn');
+  const hint = $('repliesPageHint');
+
+  if (hint) hint.textContent = `Page ${repliesPage}`;
+  if (prev) prev.disabled = repliesPage <= 1;
+  if (next) next.disabled = !repliesHasMore;
 }
 
 function easeInOutCubic(t) {
@@ -483,7 +497,7 @@ async function refresh() {
       api(`/api/campaigns?clientId=${encodeURIComponent(clientId)}&days=${encodeURIComponent(days)}&status=${encodeURIComponent(status)}`),
       // timeseries remains EmailBison-focused; still filter by status for consistency
       api(`/api/timeseries?clientId=${encodeURIComponent(clientId)}&days=${encodeURIComponent(days)}&status=${encodeURIComponent(status)}`),
-      api(`/api/replies?clientId=${encodeURIComponent(clientId)}&platform=${encodeURIComponent(repliesPlatform)}&filter=${encodeURIComponent(repliesFilter)}&days=${encodeURIComponent(days)}&status=${encodeURIComponent(status)}&limit=50`)
+      api(`/api/replies?clientId=${encodeURIComponent(clientId)}&platform=${encodeURIComponent(repliesPlatform)}&filter=${encodeURIComponent(repliesFilter)}&days=${encodeURIComponent(days)}&status=${encodeURIComponent(status)}&limit=50&perPage=50&page=${encodeURIComponent(String(repliesPage))}`)
     ]);
 
     // If a newer refresh started after this one, ignore these results.
@@ -526,7 +540,11 @@ async function refresh() {
     setChartSeries(series.series);
 
     repliesWarning = replies?.warning ?? null;
+    repliesHasMore = replies?.hasMore === true;
+    // Prefer server page echo (if any)
+    if (Number.isFinite(Number(replies?.page))) repliesPage = Number(replies.page);
     renderReplies(replies.items);
+    updateRepliesPagerUI();
 
     // Hint when HeyReach per-campaign stats are warming up.
     if (campaigns?.heyreachStatsCache?.status === 'warming') {
@@ -569,6 +587,23 @@ async function main() {
   }
 
   setRepliesTab('replied');
+
+  // Replies pager
+  const prev = $('repliesPrevBtn');
+  const next = $('repliesNextBtn');
+  if (prev) {
+    prev.addEventListener('click', () => {
+      repliesPage = Math.max(1, repliesPage - 1);
+      refresh();
+    });
+  }
+  if (next) {
+    next.addEventListener('click', () => {
+      if (!repliesHasMore) return;
+      repliesPage = repliesPage + 1;
+      refresh();
+    });
+  }
 
   // auto-refresh once
   await refresh();
