@@ -1107,7 +1107,10 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
 }
 
 // Most hosting providers (incl. AWS App Runner) expose the listen port as PORT.
-const port = Number(process.env.PORT ?? process.env.DASHBOARD_PORT ?? 8787);
+// App Runner commonly routes to 8080 (see apprunner.yaml), but may not always set PORT.
+// To avoid failed health checks, default to 8080 in production.
+const defaultPort = process.env.NODE_ENV === 'production' ? 8080 : 8787;
+const port = Number(process.env.PORT ?? process.env.DASHBOARD_PORT ?? defaultPort);
 const server = http.createServer((req, res) => {
   handler(req, res).catch(err => {
     console.error('Dashboard server error:', err);
