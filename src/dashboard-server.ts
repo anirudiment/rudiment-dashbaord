@@ -732,9 +732,27 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
             dealStage: a.dealStage ?? null
           };
         });
-      } catch {
-        // fall back to no enrichment
-        return items;
+      } catch (e: any) {
+        // IMPORTANT: Some AWS IAM policies allow PutItem/GetItem but not BatchGetItem.
+        // If BatchGet fails, fall back to per-email GetItem calls.
+        try {
+          return await Promise.all(
+            items.map(async it => {
+              const a = await clayStoreGet(clientId, it.email ?? null);
+              if (!a) return it;
+              return {
+                ...it,
+                dealAmount: a.dealAmount ?? null,
+                dealStage: a.dealStage ?? null
+              };
+            })
+          );
+        } catch {
+          if (process.env.DASHBOARD_DEBUG === '1') {
+            console.warn('[dashboard] Clay enrichment failed (batch + fallback):', e?.message ?? e);
+          }
+          return items;
+        }
       }
     }
 
