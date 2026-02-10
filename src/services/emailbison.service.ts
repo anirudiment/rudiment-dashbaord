@@ -1,6 +1,17 @@
 import axios, { AxiosInstance } from 'axios';
 import { CampaignMetrics, ReplyLead } from '../types';
 
+type RepliesCacheEntry = {
+  expiresAt: number;
+  rows: any[];
+  exhausted: boolean;
+  nextRawPage: number;
+  scannedPages: number;
+};
+
+// Module-level cache shared across service instances (per process)
+const repliesCache = new Map<string, RepliesCacheEntry>();
+
 type SendEventStatsLabel =
   | 'Replied'
   | 'Total Opens'
@@ -356,6 +367,56 @@ export class EmailBisonService {
     return Number.isFinite(ms) ? ms : 0;
   }
 
+  private getRepliesCacheKey(params: {
+    kind: 'replied' | 'interested';
+    startDate?: string;
+    endDate?: string;
+    includeAutomated?: boolean;
+    campaignId?: string | number | null;
+  }) {
+    return JSON.stringify({
+      kind: params.kind,
+      startDate: params.startDate ?? null,
+      endDate: params.endDate ?? null,
+      includeAutomated: !!params.includeAutomated,
+      campaignId: params.campaignId != null ? String(params.campaignId) : null
+    });
+  }
+
+  private getRepliesCacheTtlMs() {
+    const s = Number(process.env.EMAILBISON_REPLIES_CACHE_SECONDS ?? '60');
+    return Math.max(5, Math.min(600, Number.isFinite(s) ? s : 60)) * 1000;
+  }
+
+  private getRepliesMaxRawPages() {
+    // Hard safety cap; “unlimited” is achieved by stopping at windowStart.
+    const n = Number(process.env.EMAILBISON_REPLIES_MAX_RAW_PAGES ?? '2000');
+    return Math.max(1, Math.min(5000, Number.isFinite(n) ? n : 2000));
+  }
+
+  private isSystemOrNoise(r: any) {
+    const type = String(r?.type ?? '').toLowerCase();
+    const subject = String(r?.subject ?? '').toLowerCase();
+    const from = String(r?.from_email_address ?? '').toLowerCase();
+
+    // Explicit platform types
+    if (type === 'bounce' || type === 'bounced') return true;
+    if (type === 'outgoing email' || type === 'outgoing') return true;
+    if (type === 'untracked reply') return true;
+
+    // DMARC / system senders
+    if (from.includes('dmarc') || from.includes('postmaster') || from.includes('mailer-daemon')) return true;
+    if (from.includes('mimecast') || from.includes('dmarcreport')) return true;
+
+    // DMARC report subject patterns
+    if (subject.includes('dmarc')) return true;
+    if (subject.includes('report domain')) return true;
+    if (subject.includes('aggregate report')) return true;
+    if (subject.includes('report-id')) return true;
+
+    return false;
+  }
+
   /**
    * Fetch replies with pagination.
    *
@@ -389,6 +450,133 @@ export class EmailBisonService {
       }
     }
     return out;
+  }
+
+  /**
+   * Build a filtered, windowed list of replies by scanning raw pages from newest -> older.
+   *
+   * Why: The Send API paginates raw replies, but filtering out DMARC/bounces/etc changes the
+   * notion of a “page”. We therefore paginate on the filtered stream.
+   */
+  private async buildFilteredRepliesList(params: {
+    startDate?: string;
+    endDate?: string;
+    include: (r: any) => boolean;
+  }): Promise<{ rows: any[]; exhausted: boolean }> {
+    const startMs = params.startDate ? new Date(`${params.startDate}T00:00:00.000Z`).getTime() : null;
+    const endMs = params.endDate ? new Date(`${params.endDate}T23:59:59.999Z`).getTime() : null;
+
+    const maxRawPages = this.getRepliesMaxRawPages();
+
+    const out: any[] = [];
+    let exhausted = false;
+
+    for (let page = 1; page <= maxRawPages; page++) {
+      const res = await this.client.get('/api/replies', { params: { page } });
+      const rows: any[] = Array.isArray(res.data?.data) ? res.data.data : [];
+      if (!rows.length) {
+        exhausted = true;
+        break;
+      }
+
+      for (const r of rows) {
+        const ms = this.parseReplyDateMs(r);
+        if (endMs != null && ms && ms > endMs) continue;
+        if (startMs != null && ms && ms < startMs) continue;
+        if (!params.include(r)) continue;
+        out.push(r);
+      }
+
+      // Stop early if we've crossed the start boundary (newest-first API).
+      if (startMs != null) {
+        const last = rows[rows.length - 1];
+        const lastMs = this.parseReplyDateMs(last);
+        if (lastMs && lastMs < startMs) {
+          exhausted = true;
+          break;
+        }
+      }
+    }
+
+    return { rows: out, exhausted };
+  }
+
+  private async getFilteredRepliesStreamPage(params: {
+    kind: 'replied' | 'interested';
+    page: number;
+    perPage: number;
+    startDate?: string;
+    endDate?: string;
+    includeAutomated?: boolean;
+    include: (r: any) => boolean;
+    campaignId?: string | number;
+  }): Promise<{ rows: any[]; hasMore: boolean }> {
+    const page = Math.max(1, Math.min(1000, Number(params.page)));
+    const perPage = Math.max(1, Math.min(200, Number(params.perPage)));
+
+    const key = this.getRepliesCacheKey({
+      kind: params.kind,
+      startDate: params.startDate,
+      endDate: params.endDate,
+      includeAutomated: params.includeAutomated,
+      campaignId: params.campaignId ?? null
+    });
+
+    const startMs = params.startDate ? new Date(`${params.startDate}T00:00:00.000Z`).getTime() : null;
+    const endMs = params.endDate ? new Date(`${params.endDate}T23:59:59.999Z`).getTime() : null;
+
+    const maxRawPages = this.getRepliesMaxRawPages();
+    const now = Date.now();
+
+    let entry = repliesCache.get(key);
+    if (!entry || entry.expiresAt <= now) {
+      entry = {
+        expiresAt: now + this.getRepliesCacheTtlMs(),
+        rows: [],
+        exhausted: false,
+        nextRawPage: 1,
+        scannedPages: 0
+      };
+      repliesCache.set(key, entry);
+    }
+
+    // Ensure we have enough filtered rows to serve the requested page.
+    const offset = (page - 1) * perPage;
+    const needed = offset + perPage;
+
+    while (entry.rows.length < needed && !entry.exhausted && entry.scannedPages < maxRawPages) {
+      const res = await this.client.get('/api/replies', { params: { page: entry.nextRawPage } });
+      entry.nextRawPage += 1;
+      entry.scannedPages += 1;
+
+      const rows: any[] = Array.isArray(res.data?.data) ? res.data.data : [];
+      if (!rows.length) {
+        entry.exhausted = true;
+        break;
+      }
+
+      for (const r of rows) {
+        const ms = this.parseReplyDateMs(r);
+        if (endMs != null && ms && ms > endMs) continue;
+        if (startMs != null && ms && ms < startMs) continue;
+        if (!params.include(r)) continue;
+        entry.rows.push(r);
+      }
+
+      // Stop early if we've crossed the start boundary (newest-first API).
+      if (startMs != null) {
+        const last = rows[rows.length - 1];
+        const lastMs = this.parseReplyDateMs(last);
+        if (lastMs && lastMs < startMs) {
+          entry.exhausted = true;
+          break;
+        }
+      }
+    }
+
+    const slice = entry.rows.slice(offset, offset + perPage);
+    const hasMore = offset + perPage < entry.rows.length ? true : (!entry.exhausted && entry.scannedPages < maxRawPages);
+    return { rows: slice, hasMore };
   }
 
   /**
@@ -501,18 +689,22 @@ export class EmailBisonService {
 
     const isInterested = (v: any) => v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true';
 
-    // Fetch a page of replies after filtering to avoid empty pages caused by noisy/system replies.
-    const { rows: filtered, hasMore } = await this.fetchFilteredRepliesPage({
+    const { rows: filtered, hasMore } = await this.getFilteredRepliesStreamPage({
+      kind: 'interested',
       perPage,
       page,
-      stopBeforeDate: windowStart,
+      startDate: params.startDate,
+      endDate: params.endDate,
+      includeAutomated: params.includeAutomated,
       include: (r: any) => {
         if (!r) return false;
         if (!isInterested(r.interested)) return false;
         if (!params.includeAutomated && r.automated_reply) return false;
-        // NOTE: do NOT require lead_id here; some replies may not be joined even though they're marked interested.
+        // Some workspaces tag system replies as interested; still exclude noise
+        if (this.isSystemOrNoise(r)) return false;
         return true;
-      }
+      },
+      campaignId: params.campaignId
     });
 
     // De-dupe lead fetches (best-effort)
@@ -636,36 +828,21 @@ export class EmailBisonService {
     const perPage = Math.max(1, Math.min(200, Number(params.perPage ?? 50)));
     const page = Math.max(1, Math.min(50, Number(params.page ?? 1)));
 
-    const isSystemOrNoise = (r: any) => {
-      const type = String(r?.type ?? '').toLowerCase();
-      const subject = String(r?.subject ?? '').toLowerCase();
-      const from = String(r?.from_email_address ?? '').toLowerCase();
-
-      // Explicit platform types
-      if (type === 'bounce' || type === 'bounced') return true;
-      if (type === 'outgoing email' || type === 'outgoing') return true;
-      if (type === 'untracked reply') return true;
-
-      // Common system / DMARC report senders
-      if (from.includes('dmarc') || from.includes('postmaster') || from.includes('mailer-daemon')) return true;
-
-      // DMARC report subject patterns
-      if (subject.includes('dmarc') || subject.includes('report domain') || subject.includes('aggregate report')) return true;
-
-      return false;
-    };
-
-    // Fetch a page of replies after filtering to avoid empty pages.
-    const { rows: filtered, hasMore } = await this.fetchFilteredRepliesPage({
+    // Fetch a page from the filtered stream so “Older” pages don’t repeat.
+    const { rows: filtered, hasMore } = await this.getFilteredRepliesStreamPage({
+      kind: 'replied',
       perPage,
       page,
-      stopBeforeDate: params.startDate,
+      startDate: params.startDate,
+      endDate: params.endDate,
+      includeAutomated: params.includeAutomated,
       include: (r: any) => {
         if (!r) return false;
         if (!params.includeAutomated && r.automated_reply) return false;
-        if (isSystemOrNoise(r)) return false;
+        if (this.isSystemOrNoise(r)) return false;
         return true;
-      }
+      },
+      campaignId: params.campaignId
     });
 
     const uniqueLeadIds = Array.from(

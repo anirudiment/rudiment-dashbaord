@@ -843,7 +843,19 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
     const { config } = entry;
     const clientName = config.name;
 
-    const windowUsed = { days, startDate, endDate, status, isLifetime: !!isLifetime };
+    // For replies, treat “lifetime” as a bounded window for performance.
+    // Send API /api/replies does not reliably support server-side date filtering, so we scan
+    // pages client-side and stop once we cross the window start.
+    const repliesLifetimeDays = Math.max(30, Math.min(730, Number(process.env.EMAILBISON_REPLIES_LIFETIME_DAYS ?? '730')));
+    const repliesStartDate = isLifetime ? addDaysYmd(endDate, -repliesLifetimeDays) : startDate;
+    const repliesEndDate = endDate;
+    const windowUsed = {
+      days: isLifetime ? repliesLifetimeDays : days,
+      startDate: repliesStartDate,
+      endDate: repliesEndDate,
+      status,
+      isLifetime: !!isLifetime
+    };
 
     // EmailBison interested replies
     if (platform === 'emailbison') {
@@ -855,8 +867,8 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
         const svc = new EmailBisonService(config.platforms.emailbison.apiKey);
         const paged =
           filter === 'interested'
-            ? await svc.getInterestedReplyLeadsPage({ clientId, clientName, startDate, endDate, limit, page, perPage })
-            : await svc.getReplyLeadsPage({ clientId, clientName, startDate, endDate, limit, page, perPage });
+            ? await svc.getInterestedReplyLeadsPage({ clientId, clientName, startDate: repliesStartDate, endDate: repliesEndDate, limit, page, perPage })
+            : await svc.getReplyLeadsPage({ clientId, clientName, startDate: repliesStartDate, endDate: repliesEndDate, limit, page, perPage });
 
         const items = paged.items;
 
