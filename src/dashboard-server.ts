@@ -823,6 +823,37 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
     }
   }
 
+  // Clay attribution debug reader (protected by same secret header).
+  // Useful to verify that the server can READ the DynamoDB record after Clay writes.
+  // GET /api/clay/attribution/debug?clientId=client2&email=someone@company.com
+  if (reqUrl.pathname === '/api/clay/attribution/debug') {
+    if ((req.method || 'GET').toUpperCase() !== 'GET') {
+      return sendJson(res, 405, { error: 'Method not allowed' });
+    }
+
+    const expected = String(process.env.CLAY_WEBHOOK_SECRET ?? '').trim();
+    if (!expected) {
+      return sendJson(res, 500, { error: 'CLAY_WEBHOOK_SECRET is not configured on server' });
+    }
+    const provided = String(req.headers['x-clay-secret'] ?? '').trim();
+    if (provided !== expected) {
+      return sendJson(res, 401, { error: 'Unauthorized' });
+    }
+
+    const clientId = String(reqUrl.searchParams.get('clientId') ?? '').trim();
+    const email = String(reqUrl.searchParams.get('email') ?? '').trim();
+    if (!clientId || !email) {
+      return sendJson(res, 400, { error: 'Missing clientId or email' });
+    }
+
+    try {
+      const record = await clayStoreGet(clientId, email);
+      return sendJson(res, 200, { ok: true, record });
+    } catch (e: any) {
+      return sendJson(res, 500, { ok: false, error: e?.message ?? String(e) });
+    }
+  }
+
   if (reqUrl.pathname === '/api/summary') {
     const clientId = reqUrl.searchParams.get('clientId') || '';
     if (!clientId) return sendJson(res, 400, { error: 'Missing clientId' });
