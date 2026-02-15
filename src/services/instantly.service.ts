@@ -128,6 +128,15 @@ export class InstantlyService {
     const id = String((campaign as any).id ?? campaign.campaign_id ?? '');
     const name = (campaign as any).name ?? campaign.campaign_name;
 
+    // Normalize status best-effort.
+    // Observed: v2 status numeric 1=Active, 2=Paused.
+    const rawStatus = (campaign as any)?.status;
+    const n = Number(rawStatus);
+    const s = String(rawStatus ?? '').toLowerCase();
+    const campaignStatus =
+      Number.isFinite(n) ? (n === 1 ? 'active' : n === 2 ? 'paused' : 'completed') :
+      (s.includes('pause') ? 'paused' : s.includes('active') || s.includes('run') || s.includes('queue') ? 'active' : 'completed');
+
     // If we don't have leads breakdown, leave best-effort zeros.
     const leadsTotal = campaign.leads?.total ?? 0;
     const leadsContacted = campaign.leads?.completed ?? undefined;
@@ -137,6 +146,7 @@ export class InstantlyService {
       campaignId: id,
       platform: 'instantly',
       campaignName: name,
+      campaignStatus,
       leadsRemaining,
       leadsTotal,
       leadsContacted,
@@ -204,6 +214,8 @@ export class InstantlyService {
       campaignId: String(analytics?.campaign_id ?? ''),
       platform: 'instantly',
       campaignName: analytics?.campaign_name ?? undefined,
+      // Analytics endpoint doesn't always return status; best-effort default to active.
+      campaignStatus: analytics?.status != null ? String(analytics.status) : 'active',
       leadsRemaining,
       leadsTotal,
       leadsContacted: Number.isFinite(leadsContacted) ? leadsContacted : undefined,
@@ -232,6 +244,25 @@ export class InstantlyService {
     window?: { startDate?: string; endDate?: string; windowDays?: number; activeCampaignIds?: string[] }
   ): Promise<CampaignMetrics[]> {
     try {
+      // Best-effort status map (campaign list includes status; analytics often doesn't).
+      const statusById = new Map<string, string>();
+      try {
+        const campaigns = await this.getCampaigns();
+        for (const c of campaigns as any[]) {
+          const id = c?.id != null ? String(c.id) : (c?.campaign_id != null ? String(c.campaign_id) : null);
+          if (!id) continue;
+          const raw = c?.status;
+          const n = Number(raw);
+          const s = String(raw ?? '').toLowerCase();
+          const status =
+            Number.isFinite(n) ? (n === 1 ? 'active' : n === 2 ? 'paused' : 'completed') :
+            (s.includes('pause') ? 'paused' : s.includes('active') || s.includes('run') || s.includes('queue') ? 'active' : 'completed');
+          statusById.set(id, status);
+        }
+      } catch {
+        // ignore; status remains best-effort
+      }
+
       // Prefer analytics endpoint because it includes totals (sent/replied/bounced etc)
       // and can be used as lifetime metrics.
       const data = await this.getAllCampaignAnalytics({ startDate: window?.startDate, endDate: window?.endDate });
@@ -240,7 +271,14 @@ export class InstantlyService {
       const activeSet = window?.activeCampaignIds?.length ? new Set(window.activeCampaignIds) : null;
       return (items as any[])
         .filter(a => (activeSet ? activeSet.has(String(a?.campaign_id ?? a?.id ?? '')) : true))
-        .map(a => ({ ...this.transformAnalyticsToMetrics(a), windowDays: window?.windowDays }));
+        .map(a => {
+          const m = this.transformAnalyticsToMetrics(a);
+          const id = String((a as any)?.campaign_id ?? (a as any)?.id ?? m.campaignId ?? '');
+          const st = statusById.get(id);
+          // Prefer list status when available; else keep analytics best-effort.
+          if (st) m.campaignStatus = st;
+          return { ...m, windowDays: window?.windowDays };
+        });
     } catch (error) {
       console.error('Error fetching all Instantly campaign metrics:', error);
       return [];

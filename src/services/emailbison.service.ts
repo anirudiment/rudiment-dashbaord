@@ -130,6 +130,15 @@ export class EmailBisonService {
 
     const totalLeads = Number(campaign?.total_leads ?? 0);
 
+    // Normalize status best-effort.
+    const rawStatus = String(campaign?.status ?? '').toLowerCase();
+    const campaignStatus =
+      rawStatus.includes('pause')
+        ? 'paused'
+        : ['completed', 'done', 'finished', 'stopped', 'ended', 'inactive', 'archived'].some(x => rawStatus.includes(x))
+          ? 'completed'
+          : 'active';
+
     // Send API does not expose leads_remaining directly; derive best-effort.
     const leadsRemaining = Number(
       campaign?.leads_remaining ??
@@ -179,6 +188,7 @@ export class EmailBisonService {
       campaignId: String(campaign?.id ?? campaign?.campaign_id ?? ''),
       platform: 'emailbison',
       campaignName: campaign?.name ?? campaign?.campaign_name ?? undefined,
+      campaignStatus,
       windowDays: undefined,
       leadsRemaining,
       leadsTotal: totalLeads,

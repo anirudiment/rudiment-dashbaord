@@ -372,10 +372,15 @@ export class HeyReachService {
     const replies = Number(anyCampaign.engagement?.replies ?? 0);
     const connections = Number(anyCampaign.engagement?.connections ?? 0);
 
+    // Normalize status best-effort.
+    const raw = String(anyCampaign.status ?? '').toUpperCase();
+    const campaignStatus = raw === 'IN_PROGRESS' ? 'active' : raw === 'PAUSED' || raw === 'STOPPED' ? 'paused' : 'completed';
+
     return {
       campaignId: String(anyCampaign.id ?? (campaign as any).campaign_id ?? ''),
       platform: 'heyreach',
       campaignName: anyCampaign.name ?? (campaign as any).campaign_name ?? undefined,
+      campaignStatus,
       leadsRemaining: anyCampaign.leads?.remaining ?? 0,
       leadsTotal: anyCampaign.leads?.total ?? progress.totalUsers ?? 0,
       leadsContacted: anyCampaign.leads?.contacted ?? undefined,

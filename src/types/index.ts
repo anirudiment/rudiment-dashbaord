@@ -15,6 +15,8 @@ export interface CampaignMetrics {
   platform: 'instantly' | 'emailbison' | 'heyreach' | string;
   /** Human-readable campaign name (when available). */
   campaignName?: string;
+  /** Best-effort normalized status (used by Monitor KPI dashboard). */
+  campaignStatus?: 'active' | 'paused' | 'completed' | string;
   /**
    * If metrics are computed over a fixed time window (e.g. EmailBison last-7-days),
    * set the size of that window.

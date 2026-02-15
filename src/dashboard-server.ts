@@ -12,6 +12,7 @@ import { CampaignMetrics, ReplyLead } from './types';
 import { ClayAttributionStore } from './services/clay-attribution.store';
 import { DynamoClayAttributionStore } from './services/clay-attribution-ddb.store';
 import { getUtahLastNDaysRange, listDaysInclusive, addDaysYmd } from './utils/utahTime';
+import { computeAccountHealth, computeCampaignHealth, computeClientStatus } from './monitors/health.classifier';
 
 dotenv.config();
 
@@ -660,7 +661,14 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse) {
   }
 
   let filePath = safePath;
-  if (pathname === '/' || pathname.endsWith('/')) {
+
+  // Convenience route: serve /monitor from /monitor.html
+  if (pathname === '/monitor' || pathname === '/monitor/') {
+    filePath = path.join(publicDir, 'monitor.html');
+  }
+
+  // Normal folder index routing
+  else if (pathname === '/' || pathname.endsWith('/')) {
     filePath = path.join(safePath, 'index.html');
   }
 
@@ -871,6 +879,101 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
       window: { days, startDate, endDate, status, isLifetime: !!isLifetime },
       summary: computeSummary(data.metrics),
       heyreach: heyreachSummary
+    });
+  }
+
+  // All-clients Monitor KPI dashboard endpoint.
+  // GET /api/monitor?days=7
+  if (reqUrl.pathname === '/api/monitor') {
+    const activeClients = getActiveClients();
+    const statusAll = 'all';
+
+    const concurrency = Math.max(1, Math.min(5, Number(process.env.DASHBOARD_MONITOR_CONCURRENCY ?? '2')));
+
+    const mapWithConcurrency = async <T, R>(items: T[], fn: (it: T) => Promise<R>): Promise<R[]> => {
+      const out: R[] = new Array(items.length);
+      let idx = 0;
+      const worker = async () => {
+        while (idx < items.length) {
+          const i = idx++;
+          out[i] = await fn(items[i]);
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+      return out;
+    };
+
+    const rows = await mapWithConcurrency(activeClients, async entry => {
+      const data = await fetchClientMetrics({
+        clientId: entry.id,
+        startDate,
+        endDate,
+        days,
+        isLifetime: !!isLifetime,
+        status: statusAll,
+        includeHeyReachStats
+      });
+
+      const metricsAll = data?.metrics ?? [];
+      const statuses = metricsAll.map(m => String(m.campaignStatus ?? ''));
+      const clientStatus = computeClientStatus(statuses);
+
+      // Prefer active campaigns for KPI display; otherwise fall back to paused; otherwise all.
+      const active = metricsAll.filter(m => String(m.campaignStatus ?? '').toLowerCase() === 'active');
+      const paused = metricsAll.filter(m => String(m.campaignStatus ?? '').toLowerCase() === 'paused');
+      const selected = active.length ? active : paused.length ? paused : metricsAll;
+
+      const sum = (ms: CampaignMetrics[], k: keyof CampaignMetrics) => ms.reduce((acc, m) => acc + Number((m as any)[k] ?? 0), 0);
+
+      const leadsRemaining = sum(selected, 'leadsRemaining');
+      const leadsTotal = sum(selected, 'leadsTotal');
+
+      const emailOnly = selected.filter(m => String(m.platform) !== 'heyreach');
+      const emailSummary = computeSummary(emailOnly);
+
+      const seqDays = selected
+        .map(m => Number(m.sequenceDaysRemaining ?? 0))
+        .filter(n => Number.isFinite(n) && n > 0)
+        .sort((a, b) => a - b);
+      const sequenceEndingDays = seqDays.length ? seqDays[0] : null;
+
+      const campaignHealth = computeCampaignHealth(leadsRemaining);
+      const accountHealth = computeAccountHealth({
+        replyRate: emailSummary.rates.replyRate,
+        bounceRate: emailSummary.rates.bounceRate
+      });
+
+      return {
+        clientId: entry.id,
+        clientName: entry.config.name,
+        clientStatus,
+        campaignHealth,
+        accountHealth,
+        kpis: {
+          leadsRemaining,
+          leadsTotal,
+          replyRate: emailSummary.rates.replyRate,
+          positiveReplyRate: emailSummary.rates.positiveReplyRate,
+          bounceRate: emailSummary.rates.bounceRate,
+          sequenceEndingDays
+        }
+      };
+    });
+
+    const healthOrder = (s: string) => (s === 'at_risk' ? 0 : s === 'review' ? 1 : s === 'good' ? 2 : 3);
+    const statusOrder = (s: string) => (s === 'active' ? 0 : s === 'paused' ? 1 : 2);
+    rows.sort(
+      (a: any, b: any) =>
+        healthOrder(a.campaignHealth) - healthOrder(b.campaignHealth) ||
+        healthOrder(a.accountHealth) - healthOrder(b.accountHealth) ||
+        statusOrder(a.clientStatus) - statusOrder(b.clientStatus) ||
+        String(a.clientName).localeCompare(String(b.clientName))
+    );
+
+    return sendJson(res, 200, {
+      generatedAt: new Date().toISOString(),
+      window: { days, startDate, endDate, status: statusAll, isLifetime: !!isLifetime },
+      clients: rows
     });
   }
 
