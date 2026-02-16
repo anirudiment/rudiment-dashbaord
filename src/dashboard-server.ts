@@ -944,15 +944,20 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
       const sequenceEndingDays = seqDays.length ? seqDays[0] : null;
 
       if (channel === 'linkedin') {
+        // IMPORTANT: HeyReach per-campaign engagement stats can be missing.
+        // To avoid displaying artificial zeros, prefer the aggregate stats snapshot
+        // (single-call) when available; otherwise fall back to summing per-campaign stats.
         const li = selected.filter(m => String(m.platform) === 'heyreach');
 
-        const connectionsSent = sum(li, 'connectionsSent');
-        const connectionsAccepted = sum(li, 'connectionsAccepted');
-        const messagesSent = sum(li, 'messagesSent');
-        const messageReplies = sum(li, 'messageReplies');
+        const heySummary = data?.heyreachAggregate
+          ? computeHeyReachSummaryFromAggregate(data.heyreachAggregate)
+          : computeHeyReachSummary(li);
 
-        const acceptanceRate = connectionsSent > 0 ? (connectionsAccepted / connectionsSent) * 100 : 0;
-        const replyRate = messagesSent > 0 ? (messageReplies / messagesSent) * 100 : 0;
+        const connectionsSent = Number(heySummary?.totals?.connectionsSent ?? 0);
+        const acceptanceRate = Number(heySummary?.rates?.acceptanceRate ?? 0);
+        const messagesSent = Number(heySummary?.totals?.messagesSent ?? 0);
+        const messageReplies = Number(heySummary?.totals?.messageReplies ?? 0);
+        const replyRate = Number(heySummary?.rates?.messageReplyRate ?? 0);
 
         // Normalize connections to per-week so ranges like 14/30d are comparable.
         const windowDays = Number.isFinite(Number(days)) ? Number(days) : 7;
