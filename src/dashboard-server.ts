@@ -12,7 +12,15 @@ import { CampaignMetrics, ReplyLead } from './types';
 import { ClayAttributionStore } from './services/clay-attribution.store';
 import { DynamoClayAttributionStore } from './services/clay-attribution-ddb.store';
 import { getUtahLastNDaysRange, listDaysInclusive, addDaysYmd } from './utils/utahTime';
-import { computeAccountHealth, computeCampaignHealth, computeClientStatus } from './monitors/health.classifier';
+import {
+  computeAccountHealth,
+  computeAccountHealthLinkedIn,
+  computeCampaignHealth,
+  computeCampaignHealthLinkedIn,
+  computeClientStatus,
+  computeEmailHealth,
+  type Channel
+} from './monitors/health.classifier';
 
 dotenv.config();
 
@@ -885,6 +893,7 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
   // All-clients Monitor KPI dashboard endpoint.
   // GET /api/monitor?days=7
   if (reqUrl.pathname === '/api/monitor') {
+    const channel = (String(reqUrl.searchParams.get('channel') ?? 'email').toLowerCase() as Channel) || 'email';
     const activeClients = getActiveClients();
     const statusAll = 'all';
 
@@ -928,27 +937,71 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
       const leadsRemaining = sum(selected, 'leadsRemaining');
       const leadsTotal = sum(selected, 'leadsTotal');
 
-      const emailOnly = selected.filter(m => String(m.platform) !== 'heyreach');
-      const emailSummary = computeSummary(emailOnly);
-
       const seqDays = selected
         .map(m => Number(m.sequenceDaysRemaining ?? 0))
         .filter(n => Number.isFinite(n) && n > 0)
         .sort((a, b) => a - b);
       const sequenceEndingDays = seqDays.length ? seqDays[0] : null;
 
+      if (channel === 'linkedin') {
+        const li = selected.filter(m => String(m.platform) === 'heyreach');
+
+        const connectionsSent = sum(li, 'connectionsSent');
+        const connectionsAccepted = sum(li, 'connectionsAccepted');
+        const messagesSent = sum(li, 'messagesSent');
+        const messageReplies = sum(li, 'messageReplies');
+
+        const acceptanceRate = connectionsSent > 0 ? (connectionsAccepted / connectionsSent) * 100 : 0;
+        const replyRate = messagesSent > 0 ? (messageReplies / messagesSent) * 100 : 0;
+
+        // Normalize connections to per-week so ranges like 14/30d are comparable.
+        const windowDays = Number.isFinite(Number(days)) ? Number(days) : 7;
+        const connectionsSentPerWeek = windowDays > 0 ? connectionsSent * (7 / windowDays) : connectionsSent;
+
+        const campaignHealth = computeCampaignHealthLinkedIn({
+          acceptanceRate,
+          replyRate
+        });
+        const accountHealth = computeAccountHealthLinkedIn({
+          connectionsSentPerWeek
+        });
+
+        return {
+          clientId: entry.id,
+          clientName: entry.config.name,
+          clientStatus,
+          channel,
+          campaignHealth,
+          accountHealth,
+          kpis: {
+            connectionsSent,
+            acceptanceRate,
+            messagesSent,
+            messageReplies,
+            replyRate
+          }
+        };
+      }
+
+      // Default: email view
+      const emailOnly = selected.filter(m => String(m.platform) !== 'heyreach');
+      const emailSummary = computeSummary(emailOnly);
+
       const campaignHealth = computeCampaignHealth(leadsRemaining);
       const accountHealth = computeAccountHealth({
         replyRate: emailSummary.rates.replyRate,
         bounceRate: emailSummary.rates.bounceRate
       });
+      const emailHealth = computeEmailHealth({ bounceRate: emailSummary.rates.bounceRate });
 
       return {
         clientId: entry.id,
         clientName: entry.config.name,
         clientStatus,
+        channel: 'email',
         campaignHealth,
         accountHealth,
+        emailHealth,
         kpis: {
           leadsRemaining,
           leadsTotal,
@@ -973,6 +1026,7 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
     return sendJson(res, 200, {
       generatedAt: new Date().toISOString(),
       window: { days, startDate, endDate, status: statusAll, isLifetime: !!isLifetime },
+      channel,
       clients: rows
     });
   }

@@ -42,74 +42,71 @@
     </header>
 
     <main class="container">
-      <section class="panel" style="margin-top: 14px;">
-        <div class="panel__header">
-          <div class="panel__title">Email Outbound Motion Overview</div>
-          <div class="panel__hint">Email outreach</div>
+      <!-- Summary rows (match reference screenshot layout). IDs are preserved for app.js binding. -->
+      <section class="summaryRows" style="margin-top: 14px;">
+        <div class="summaryRow">
+          <div class="summaryRow__left">
+            <div class="summaryRow__name" id="clientName">—</div>
+            <div class="summaryRow__meta">
+              <span class="pill pill--active" id="clientStatusPill">Active</span>
+              <span class="pill" id="emailChannelPill">Email</span>
+            </div>
+          </div>
+          <div class="summaryRow__kpis">
+            <div class="kpi">
+              <div class="kpi__value" id="sent">—</div>
+              <div class="kpi__label">Emails Sent</div>
+            </div>
+            <div class="kpi">
+              <div class="kpi__value" id="contacted">—</div>
+              <div class="kpi__label">Total Contacted</div>
+            </div>
+            <div class="kpi">
+              <div class="kpi__value" id="replyRate">—</div>
+              <div class="kpi__label">Reply Rate</div>
+            </div>
+            <div class="kpi">
+              <div class="kpi__value" id="positiveReplyRate">—</div>
+              <div class="kpi__label">Positive Reply Rate</div>
+            </div>
+            <div class="kpi">
+              <div class="kpi__value" id="bounceRate">—</div>
+              <div class="kpi__label">Bounce Rate</div>
+            </div>
+          </div>
         </div>
-        <section class="cards" id="cards">
-          <div class="card">
-            <div class="card__label">Emails Sent</div>
-            <div class="card__value" id="sent">—</div>
-          </div>
-          <div class="card">
-            <div class="card__label">Total Contacted</div>
-            <div class="card__value" id="contacted">—</div>
-          </div>
-          <div class="card">
-            <div class="card__label">Total Replies</div>
-            <div class="card__value" id="replied">—</div>
-          </div>
-          <div class="card">
-            <div class="card__label">Interested</div>
-            <div class="card__value" id="interested">—</div>
-          </div>
-          <div class="card">
-            <div class="card__label">Reply Rate</div>
-            <div class="card__value" id="replyRate">—</div>
-          </div>
-          <div class="card">
-            <div class="card__label">Positive Reply Rate</div>
-            <div class="card__value" id="positiveReplyRate">—</div>
-          </div>
-          <div class="card">
-            <div class="card__label">Bounce Rate</div>
-            <div class="card__value" id="bounceRate">—</div>
-          </div>
-        </section>
-      </section>
 
-      <section class="panel" style="margin-top: 14px;">
-        <div class="panel__header">
-          <div class="panel__title">LinkedIn Outbound Motion Overview</div>
-          <div class="panel__hint">HeyReach</div>
+        <div class="summaryRow">
+          <div class="summaryRow__left">
+            <div class="summaryRow__name" id="clientNameLinkedin">—</div>
+            <div class="summaryRow__meta">
+              <span class="pill pill--active" id="clientStatusPillLinkedin">Active</span>
+              <span class="pill" id="linkedinChannelPill">LinkedIn</span>
+            </div>
+          </div>
+          <div class="summaryRow__kpis">
+            <div class="kpi">
+              <div class="kpi__value" id="hrConnectionsSent">—</div>
+              <div class="kpi__label">Connections Sent</div>
+            </div>
+            <div class="kpi">
+              <div class="kpi__value" id="hrAcceptanceRate">—</div>
+              <div class="kpi__label">Acceptance Rate</div>
+            </div>
+            <div class="kpi">
+              <div class="kpi__value" id="hrMessagesSent">—</div>
+              <div class="kpi__label">Message Sent</div>
+            </div>
+            <div class="kpi">
+              <div class="kpi__value" id="hrMessageReplies">—</div>
+              <div class="kpi__label">Message Replies</div>
+            </div>
+            <div class="kpi">
+              <div class="kpi__value" id="hrMessageReplyRate">—</div>
+              <div class="kpi__label">Reply Rate</div>
+            </div>
+          </div>
         </div>
-        <section class="cards" id="heyreachCards">
-          <div class="card">
-            <div class="card__label">Connections Sent</div>
-            <div class="card__value" id="hrConnectionsSent">—</div>
-          </div>
-          <div class="card">
-            <div class="card__label">Connections Accepted</div>
-            <div class="card__value" id="hrConnectionsAccepted">—</div>
-          </div>
-          <div class="card">
-            <div class="card__label">Acceptance Rate</div>
-            <div class="card__value" id="hrAcceptanceRate">—</div>
-          </div>
-          <div class="card">
-            <div class="card__label">Messages Sent</div>
-            <div class="card__value" id="hrMessagesSent">—</div>
-          </div>
-          <div class="card">
-            <div class="card__label">Message Replies</div>
-            <div class="card__value" id="hrMessageReplies">—</div>
-          </div>
-          <div class="card">
-            <div class="card__label">Message Reply Rate</div>
-            <div class="card__value" id="hrMessageReplyRate">—</div>
-          </div>
-        </section>
       </section>
 
       <section class="panel">

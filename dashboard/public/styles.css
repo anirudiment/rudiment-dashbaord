@@ -394,6 +394,49 @@ body {
   color: rgba(255, 255, 255, 0.65);
 }
 
+/* Main Dashboard: summary rows (reference-inspired) */
+.summaryRows {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.summaryRow {
+  display: grid;
+  grid-template-columns: 360px 1fr;
+  gap: 12px;
+  padding: 14px;
+  border-radius: var(--radius);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
+  box-shadow: var(--shadow);
+}
+
+.summaryRow__name {
+  font-weight: 750;
+  font-size: 22px;
+  letter-spacing: -0.2px;
+}
+
+.summaryRow__meta {
+  margin-top: 8px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.summaryRow__kpis {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+@media (max-width: 1050px) {
+  .summaryRow { grid-template-columns: 1fr; }
+  .summaryRow__kpis { grid-template-columns: repeat(3, 1fr); }
+}
+
 @media (max-width: 1050px) {
   .monitorRow {
     grid-template-columns: 1fr;

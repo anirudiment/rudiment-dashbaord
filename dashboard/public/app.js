@@ -43,6 +43,25 @@ function setStatus(msg) {
   $('status').textContent = msg;
 }
 
+function setIfExists(id, text) {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = text;
+}
+
+function setPill(id, label, kind) {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = label;
+  // Reset to base + optional modifier
+  el.className = 'pill';
+  if (kind === 'active') el.className = 'pill pill--active';
+  if (kind === 'subtle') el.className = 'pill pill--subtle';
+  if (kind === 'good') el.className = 'pill pill--good';
+  if (kind === 'review') el.className = 'pill pill--review';
+  if (kind === 'risk') el.className = 'pill pill--risk';
+}
+
 // Prevent stale responses from earlier refresh() calls from overwriting UI
 // after a user has already switched clients.
 let refreshSeq = 0;
@@ -503,33 +522,40 @@ async function refresh() {
     // If a newer refresh started after this one, ignore these results.
     if (seq !== refreshSeq) return;
 
+    // Update summary row headings
+    setIfExists('clientName', summary.clientName);
+    setIfExists('clientNameLinkedin', summary.clientName);
+    // Note: client status is not returned by /api/summary; keep "Active" pill as a UI affordance.
+    // If needed later we can plumb /api/monitor status per client.
+
     const s = summary.summary;
-    $('sent').textContent = fmtInt(s.totals.sent);
-    $('contacted').textContent = fmtInt(s.totals.contacted);
-    $('replied').textContent = fmtInt(s.totals.replied);
-    $('interested').textContent = fmtInt(s.totals.interested);
-    $('replyRate').textContent = fmtPct(s.rates.replyRate);
-    $('positiveReplyRate').textContent = fmtPct(s.rates.positiveReplyRate ?? 0);
-    $('bounceRate').textContent = fmtPct(s.rates.bounceRate);
+    setIfExists('sent', fmtInt(s.totals.sent));
+    setIfExists('contacted', fmtInt(s.totals.contacted));
+    // legacy IDs (removed from layout) are ignored safely:
+    setIfExists('replied', fmtInt(s.totals.replied));
+    setIfExists('interested', fmtInt(s.totals.interested));
+    setIfExists('replyRate', fmtPct(s.rates.replyRate));
+    setIfExists('positiveReplyRate', fmtPct(s.rates.positiveReplyRate ?? 0));
+    setIfExists('bounceRate', fmtPct(s.rates.bounceRate));
 
     // HeyReach summary (separate KPI block)
     const hr = summary.heyreach;
     if (hr && hr.totals) {
-      $('hrConnectionsSent').textContent = fmtInt(hr.totals.connectionsSent);
-      $('hrConnectionsAccepted').textContent = fmtInt(hr.totals.connectionsAccepted);
-      $('hrAcceptanceRate').textContent = fmtPct(hr.rates?.acceptanceRate ?? 0);
-      $('hrMessagesSent').textContent = fmtInt(hr.totals.messagesSent);
-      $('hrMessageReplies').textContent = fmtInt(hr.totals.messageReplies);
-      $('hrMessageReplyRate').textContent = fmtPct(hr.rates?.messageReplyRate ?? 0);
+      setIfExists('hrConnectionsSent', fmtInt(hr.totals.connectionsSent));
+      setIfExists('hrConnectionsAccepted', fmtInt(hr.totals.connectionsAccepted));
+      setIfExists('hrAcceptanceRate', fmtPct(hr.rates?.acceptanceRate ?? 0));
+      setIfExists('hrMessagesSent', fmtInt(hr.totals.messagesSent));
+      setIfExists('hrMessageReplies', fmtInt(hr.totals.messageReplies));
+      setIfExists('hrMessageReplyRate', fmtPct(hr.rates?.messageReplyRate ?? 0));
       // InMail KPIs intentionally omitted for now.
     } else {
       // If HeyReach not enabled for this client, keep placeholders.
-      $('hrConnectionsSent').textContent = '—';
-      $('hrConnectionsAccepted').textContent = '—';
-      $('hrAcceptanceRate').textContent = '—';
-      $('hrMessagesSent').textContent = '—';
-      $('hrMessageReplies').textContent = '—';
-      $('hrMessageReplyRate').textContent = '—';
+      setIfExists('hrConnectionsSent', '—');
+      setIfExists('hrConnectionsAccepted', '—');
+      setIfExists('hrAcceptanceRate', '—');
+      setIfExists('hrMessagesSent', '—');
+      setIfExists('hrMessageReplies', '—');
+      setIfExists('hrMessageReplyRate', '—');
       // InMail KPIs intentionally omitted for now.
     }
 

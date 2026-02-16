@@ -1,6 +1,8 @@
 export type ClientStatus = 'active' | 'paused' | 'stopped';
 export type HealthStatus = 'good' | 'review' | 'at_risk' | 'n_a';
 
+export type Channel = 'email' | 'linkedin';
+
 /**
  * Client-level status derived from campaign statuses.
  */
@@ -33,40 +35,118 @@ export function computeClientStatus(campaignStatuses: Array<string | null | unde
 }
 
 /**
- * Campaign health based on leads remaining.
+ * EMAIL: Campaign health based on leads remaining.
  *
- * Spec:
- * - Good: > 100
- * - Review: 1..100
- * - At Risk: 0
+ * Spec (Robert):
+ * - Review: leads < 100
+ * - Good: leads >= 100
+ * - No At Risk
  */
-export function computeCampaignHealth(leadsRemaining: number | null | undefined): HealthStatus {
-  const n = Number(leadsRemaining ?? 0);
+export function computeCampaignHealthEmail(leadsRemaining: number | null | undefined): HealthStatus {
+  const n = Number(leadsRemaining);
   if (!Number.isFinite(n)) return 'n_a';
-  if (n <= 0) return 'at_risk';
-  if (n <= 100) return 'review';
+  if (n < 100) return 'review';
   return 'good';
 }
 
 /**
- * Account health based on reply rate and bounce rate (percent values, 0..100).
+ * Backwards compatibility: the old name was used in /api/monitor.
+ * Default it to the new Email logic.
+ */
+export const computeCampaignHealth = computeCampaignHealthEmail;
+
+/**
+ * EMAIL: Account health based on reply rate (percent values, 0..100).
  *
- * Spec:
- * - Good: reply >= 2% AND bounce < 2%
- * - Review: reply 1%..1.9% (and bounce still < 2%)
- * - At Risk: reply < 1% OR bounce >= 2%
+ * Spec (Robert):
+ * - Good: reply >= 2%
+ * - Review: 1% .. 1.9%
+ * - At Risk: reply < 1%
+ */
+export function computeAccountHealthEmail(params: {
+  replyRate: number | null | undefined;
+}): HealthStatus {
+  const reply = Number(params.replyRate);
+  if (!Number.isFinite(reply)) return 'n_a';
+  if (reply < 1) return 'at_risk';
+  if (reply < 2) return 'review';
+  return 'good';
+}
+
+/**
+ * EMAIL: Email health based on bounce rate (percent values, 0..100).
+ *
+ * Spec (Robert):
+ * - Good: 0% .. 1%
+ * - Review: 1.1% .. 2%
+ * - At Risk: >= 2.1%
+ */
+export function computeEmailHealth(params: {
+  bounceRate: number | null | undefined;
+}): HealthStatus {
+  const bounce = Number(params.bounceRate);
+  if (!Number.isFinite(bounce)) return 'n_a';
+  if (bounce <= 1) return 'good';
+  if (bounce <= 2) return 'review';
+  return 'at_risk';
+}
+
+/**
+ * Backwards compatibility: old API passed both replyRate and bounceRate.
+ * New behavior: account health is reply-rate only.
  */
 export function computeAccountHealth(params: {
   replyRate: number | null | undefined;
-  bounceRate: number | null | undefined;
+  bounceRate?: number | null | undefined;
 }): HealthStatus {
-  const reply = Number(params.replyRate);
-  const bounce = Number(params.bounceRate);
-  if (!Number.isFinite(reply) || !Number.isFinite(bounce)) return 'n_a';
+  return computeAccountHealthEmail({ replyRate: params.replyRate });
+}
 
-  if (reply < 1 || bounce >= 2) return 'at_risk';
-  if (reply < 2) return 'review';
-  // reply >= 2
-  if (bounce < 2) return 'good';
-  return 'at_risk';
+function worst(a: HealthStatus, b: HealthStatus): HealthStatus {
+  const order = (s: HealthStatus) => (s === 'at_risk' ? 0 : s === 'review' ? 1 : s === 'good' ? 2 : 3);
+  return order(a) <= order(b) ? a : b;
+}
+
+/**
+ * LINKEDIN: Campaign health considers acceptance rate and reply rate.
+ *
+ * Spec (Robert):
+ * - Good: acceptance >= 30% OR reply >= 20%
+ * - Review: acceptance 20..29% OR reply 10..19%
+ * - At Risk: acceptance < 20% OR reply < 10%
+ *
+ * Combine rule (per user guidance): if the two factors disagree, return Review ("average").
+ */
+export function computeCampaignHealthLinkedIn(params: {
+  acceptanceRate: number | null | undefined;
+  replyRate: number | null | undefined;
+}): HealthStatus {
+  const acc = Number(params.acceptanceRate);
+  const rep = Number(params.replyRate);
+  if (!Number.isFinite(acc) || !Number.isFinite(rep)) return 'n_a';
+
+  const forAcceptance: HealthStatus = acc >= 30 ? 'good' : acc >= 20 ? 'review' : 'at_risk';
+  const forReply: HealthStatus = rep >= 20 ? 'good' : rep >= 10 ? 'review' : 'at_risk';
+
+  if (forAcceptance === forReply) return forAcceptance;
+  // disagree => average to review
+  return 'review';
+}
+
+/**
+ * LINKEDIN: Account health based on connections sent per week.
+ *
+ * Spec (Robert):
+ * - Good: >= 125
+ * - Review: 75..124
+ * - At Risk: < 75
+ */
+export function computeAccountHealthLinkedIn(params: {
+  connectionsSentPerWeek: number | null | undefined;
+}): HealthStatus {
+  const n = Number(params.connectionsSentPerWeek);
+  if (!Number.isFinite(n)) return 'n_a';
+  if (n < 75) return 'at_risk';
+  if (n < 125) return 'review';
+  return 'good';
 }

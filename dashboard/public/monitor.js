@@ -1,5 +1,22 @@
 const $ = (id) => document.getElementById(id);
 
+function getQuery() {
+  return new URLSearchParams(window.location.search || '');
+}
+
+function getChannel() {
+  const q = getQuery();
+  const ch = String(q.get('channel') || 'email').toLowerCase();
+  return ch === 'linkedin' ? 'linkedin' : 'email';
+}
+
+function setChannel(ch) {
+  const q = getQuery();
+  q.set('channel', ch);
+  const next = `${window.location.pathname}?${q.toString()}`;
+  window.history.replaceState(null, '', next);
+}
+
 function fmtInt(n) {
   const num = Number(n ?? 0);
   if (!Number.isFinite(num)) return '0';
@@ -62,6 +79,8 @@ function renderRows(items) {
   const root = $('clientRows');
   root.innerHTML = '';
 
+  const channel = getChannel();
+
   const rows = Array.isArray(items) ? items : [];
   if (!rows.length) {
     root.innerHTML = `<div style="opacity:0.7; padding: 10px 4px;">No active clients found (check .env keys).</div>`;
@@ -69,35 +88,74 @@ function renderRows(items) {
   }
 
   for (const c of rows) {
-    const leads = c?.kpis?.leadsRemaining != null
-      ? `${fmtInt(c.kpis.leadsRemaining)}/${fmtInt(c.kpis.leadsTotal)}`
-      : '—';
-
-    const seq = Number.isFinite(Number(c?.kpis?.sequenceEndingDays))
-      ? String(Math.round(Number(c.kpis.sequenceEndingDays)))
-      : '—';
-
     const el = document.createElement('div');
     el.className = 'monitorRow';
-    el.innerHTML = `
-      <div class="monitorRow__left">
-        <div class="monitorRow__name">${String(c.clientName || c.clientId || '—')}</div>
-        <div class="monitorRow__meta">
-          <span class="${pillClassForClientStatus(c.clientStatus)}">${labelForClientStatus(c.clientStatus)}</span>
-          <div class="monitorRow__health">
-            <div class="monitorRow__healthLine">
-              <span class="monitorRow__healthLabel">Campaign Health</span>
-              <span class="${pillClassForHealth(c.campaignHealth)}">${labelForHealth(c.campaignHealth)}</span>
-            </div>
-            <div class="monitorRow__healthLine">
-              <span class="monitorRow__healthLabel">Account Health</span>
-              <span class="${pillClassForHealth(c.accountHealth)}">${labelForHealth(c.accountHealth)}</span>
-            </div>
-          </div>
-        </div>
-      </div>
 
-      <div class="monitorRow__kpis">
+    const healthLines = (() => {
+      if (channel === 'linkedin') {
+        return `
+          <div class="monitorRow__healthLine">
+            <span class="monitorRow__healthLabel">Campaign Health</span>
+            <span class="${pillClassForHealth(c.campaignHealth)}">${labelForHealth(c.campaignHealth)}</span>
+          </div>
+          <div class="monitorRow__healthLine">
+            <span class="monitorRow__healthLabel">Account Health</span>
+            <span class="${pillClassForHealth(c.accountHealth)}">${labelForHealth(c.accountHealth)}</span>
+          </div>
+        `;
+      }
+
+      return `
+        <div class="monitorRow__healthLine">
+          <span class="monitorRow__healthLabel">Campaign Health</span>
+          <span class="${pillClassForHealth(c.campaignHealth)}">${labelForHealth(c.campaignHealth)}</span>
+        </div>
+        <div class="monitorRow__healthLine">
+          <span class="monitorRow__healthLabel">Account Health</span>
+          <span class="${pillClassForHealth(c.accountHealth)}">${labelForHealth(c.accountHealth)}</span>
+        </div>
+        <div class="monitorRow__healthLine">
+          <span class="monitorRow__healthLabel">Email Health</span>
+          <span class="${pillClassForHealth(c.emailHealth)}">${labelForHealth(c.emailHealth)}</span>
+        </div>
+      `;
+    })();
+
+    const kpisHtml = (() => {
+      if (channel === 'linkedin') {
+        return `
+          <div class="kpi">
+            <div class="kpi__value">${fmtInt(c?.kpis?.connectionsSent)}</div>
+            <div class="kpi__label">Connections Sent</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi__value">${fmtPct(c?.kpis?.acceptanceRate)}</div>
+            <div class="kpi__label">Acceptance Rate</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi__value">${fmtInt(c?.kpis?.messagesSent)}</div>
+            <div class="kpi__label">Messages Sent</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi__value">${fmtInt(c?.kpis?.messageReplies)}</div>
+            <div class="kpi__label">Message Replies</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi__value">${fmtPct(c?.kpis?.replyRate)}</div>
+            <div class="kpi__label">Reply Rate</div>
+          </div>
+        `;
+      }
+
+      const leads = c?.kpis?.leadsRemaining != null
+        ? `${fmtInt(c.kpis.leadsRemaining)}/${fmtInt(c.kpis.leadsTotal)}`
+        : '—';
+
+      const seq = Number.isFinite(Number(c?.kpis?.sequenceEndingDays))
+        ? String(Math.round(Number(c.kpis.sequenceEndingDays)))
+        : '—';
+
+      return `
         <div class="kpi">
           <div class="kpi__value">${leads}</div>
           <div class="kpi__label">Leads Remaining</div>
@@ -118,7 +176,19 @@ function renderRows(items) {
           <div class="kpi__value">${seq}</div>
           <div class="kpi__label">Sequence Ending (days)</div>
         </div>
+      `;
+    })();
+
+    el.innerHTML = `
+      <div class="monitorRow__left">
+        <div class="monitorRow__name">${String(c.clientName || c.clientId || '—')}</div>
+        <div class="monitorRow__meta">
+          <span class="${pillClassForClientStatus(c.clientStatus)}">${labelForClientStatus(c.clientStatus)}</span>
+          <div class="monitorRow__health">${healthLines}</div>
+        </div>
       </div>
+
+      <div class="monitorRow__kpis">${kpisHtml}</div>
     `;
 
     root.appendChild(el);
@@ -128,6 +198,7 @@ function renderRows(items) {
 let refreshSeq = 0;
 
 async function refresh() {
+  const channel = getChannel();
   const days = $('daysSelect').value;
   const seq = ++refreshSeq;
   const btn = $('refreshBtn');
@@ -135,7 +206,7 @@ async function refresh() {
   setStatus('Loading…');
 
   try {
-    const data = await api(`/api/monitor?days=${encodeURIComponent(days)}`);
+    const data = await api(`/api/monitor?days=${encodeURIComponent(days)}&channel=${encodeURIComponent(channel)}`);
     if (seq !== refreshSeq) return;
     $('rangeHint').textContent = `${data?.window?.startDate || '—'} → ${data?.window?.endDate || '—'}`;
     renderRows(data.clients);
@@ -153,6 +224,19 @@ async function refresh() {
 async function main() {
   $('refreshBtn').addEventListener('click', refresh);
   $('daysSelect').addEventListener('change', refresh);
+
+  // Channel dropdown (Email / LinkedIn)
+  const chan = $('channelSelect');
+  if (chan) {
+    chan.value = getChannel();
+    chan.addEventListener('change', () => {
+      const v = String(chan.value || 'email').toLowerCase();
+      const next = v === 'linkedin' ? 'linkedin' : 'email';
+      setChannel(next);
+      refresh();
+    });
+  }
+
   await refresh();
 
   // Optional auto-refresh (1 min). Set to 0 to disable.
