@@ -15,12 +15,15 @@
         <div class="controls">
           <div class="navTabs" role="navigation" aria-label="Dashboard tabs">
             <a class="navTab" href="/">Dashboard</a>
-            <a class="navTab navTab--active" href="/monitor">Monitor KPI</a>
+            <div class="navTabGroup" role="group" aria-label="Monitor KPI channel">
+              <a class="navTab navTab--active navTabGroup__tab" href="/monitor">Monitor KPI</a>
+              <label class="srOnly" for="channelSelect">Channel</label>
+              <select id="channelSelect" class="select navTabGroup__select" aria-label="Channel">
+                <option value="email" selected>Email</option>
+                <option value="linkedin">LinkedIn</option>
+              </select>
+            </div>
           </div>
-          <select id="channelSelect" class="select" aria-label="Channel">
-            <option value="email" selected>Email</option>
-            <option value="linkedin">LinkedIn</option>
-          </select>
           <select id="daysSelect" class="select" aria-label="Range">
             <option value="1">Last 1 day</option>
             <option value="7" selected>Last 7 days</option>

@@ -29,6 +29,12 @@ function fmtPct(n) {
   return `${num.toFixed(1)}%`;
 }
 
+function clamp01(x) {
+  const n = Number(x);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(1, n));
+}
+
 function setStatus(msg) {
   $('status').textContent = msg;
 }
@@ -155,6 +161,20 @@ function renderRows(items) {
         ? String(Math.round(Number(c.kpis.sequenceEndingDays)))
         : '—';
 
+      // Progress % (weighted) from backend: 0..100
+      const progressRate = Number(c?.kpis?.progressRate);
+      const progressAvailable = Number.isFinite(progressRate);
+      const progressFrac = clamp01(progressRate / 100);
+
+      const progressHtml = progressAvailable
+        ? `
+          <div class="kpi__value">${fmtPct(progressRate)}</div>
+          <div class="kpiBar" role="img" aria-label="Progress">
+            <div class="kpiBar__fill" style="width:${(progressFrac * 100).toFixed(1)}%"></div>
+          </div>
+        `
+        : `<div class="kpi__value">${seq}</div>`;
+
       return `
         <div class="kpi">
           <div class="kpi__value">${leads}</div>
@@ -173,8 +193,8 @@ function renderRows(items) {
           <div class="kpi__label">Bounce Rate</div>
         </div>
         <div class="kpi">
-          <div class="kpi__value">${seq}</div>
-          <div class="kpi__label">Sequence Ending (days)</div>
+          ${progressHtml}
+          <div class="kpi__label">Progress</div>
         </div>
       `;
     })();
@@ -235,6 +255,18 @@ async function main() {
       setChannel(next);
       refresh();
     });
+  }
+
+  // If user navigates directly to /monitor?channel=..., make sure the active tab link
+  // preserves that channel when clicked (prevents resetting to default email).
+  try {
+    const tab = document.querySelector('.navTabGroup__tab');
+    if (tab && tab.getAttribute) {
+      const ch = getChannel();
+      tab.setAttribute('href', `/monitor?channel=${encodeURIComponent(ch)}`);
+    }
+  } catch {
+    // ignore
   }
 
   await refresh();

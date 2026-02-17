@@ -97,6 +97,54 @@ body {
   align-items: center;
 }
 
+/*
+ * Monitor KPI: grouped tab + channel select (matches reference screenshot style)
+ */
+.navTabGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+}
+
+.navTabGroup__tab {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: none;
+  min-width: 132px;
+}
+
+.navTabGroup__select {
+  height: 36px;
+  border-radius: 999px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(11, 211, 242, 0.55);
+  border-left: none;
+  color: rgba(255, 255, 255, 0.95);
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.navTabGroup__select:focus {
+  outline: 2px solid rgba(11, 211, 242, 0.55);
+  outline-offset: 1px;
+}
+
+/* Accessible only label */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
 .navTab {
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.16);
@@ -386,6 +434,25 @@ body {
   font-variant-numeric: tabular-nums;
   font-weight: 800;
   font-size: 28px;
+}
+
+/* KPI progress bar (used for Progress %) */
+.kpiBar {
+  margin: 8px auto 0;
+  width: 100%;
+  max-width: 160px;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.10);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.kpiBar__fill {
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, rgba(66, 238, 183, 0.95), rgba(11, 211, 242, 0.95));
+  border-radius: 999px;
 }
 
 .kpi__label {

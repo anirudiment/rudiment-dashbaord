@@ -151,6 +151,33 @@ export class EmailBisonService {
         (totalLeads > 0 ? Math.max(0, totalLeads - leadsRemaining) : 0)
     );
 
+    // --- Sequence ending (progress-based estimate) ---
+    // We define "sequence days remaining" as: remaining leads / observed leads-contacted-per-day.
+    // Observed velocity is best computed from the **windowed** contacted delta.
+    // When the API doesn't provide a stable contacted delta for the window, fall back to sent/windowDays.
+    const windowDays = Number((campaign as any)?.windowDays ?? (campaign as any)?.window_days ?? 0);
+    const velocityPerDay = (() => {
+      const wd = Number.isFinite(windowDays) && windowDays > 0 ? windowDays : 0;
+      if (!wd) return 0;
+
+      // Prefer contacted delta within window.
+      // NOTE: This relies on passing windowed campaign details (with start_date/end_date)
+      // into transformToMetrics when fetching windowed metrics.
+      const contactedWin = Number(campaign?.total_leads_contacted ?? campaign?.leads_contacted ?? 0);
+      if (Number.isFinite(contactedWin) && contactedWin > 0) return contactedWin / wd;
+
+      // Fallback: sent delta within window.
+      const sentWin = Number(windowTotals?.sent ?? campaign?.emails_sent ?? 0);
+      if (Number.isFinite(sentWin) && sentWin > 0) return sentWin / wd;
+      return 0;
+    })();
+
+    // Prevent divide-by-zero; if velocity is 0, we cannot estimate.
+    const sequenceDaysRemaining =
+      velocityPerDay > 0 && Number.isFinite(leadsRemaining)
+        ? Math.max(0, Math.ceil(leadsRemaining / velocityPerDay))
+        : 0;
+
     // EmailBison UI % badges are typically computed “per contacted”, not “per sent”
     // (e.g. Unique Replies %, Bounced %, Unique Opens %).
     // If contacted is unavailable (some endpoints), fall back to sent.
@@ -204,7 +231,7 @@ export class EmailBisonService {
       bounceRate: denomForContactRates > 0 ? (bounces / denomForContactRates) * 100 : 0,
       replyRate: denomForContactRates > 0 ? (replies / denomForContactRates) * 100 : 0,
       openRate: denomForContactRates > 0 ? (opens / denomForContactRates) * 100 : 0,
-      sequenceDaysRemaining: 0,
+      sequenceDaysRemaining,
       campaignDuration: 0,
       dailySendVolume: sent,
       timestamp: new Date()

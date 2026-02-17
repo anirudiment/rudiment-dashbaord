@@ -992,6 +992,17 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
       const emailOnly = selected.filter(m => String(m.platform) !== 'heyreach');
       const emailSummary = computeSummary(emailOnly);
 
+      // Progress % (weighted): 1 - (remaining/total)
+      // Mirrors EmailBison UI intent at the client aggregate level.
+      const progressRate = (() => {
+        const total = sum(emailOnly, 'leadsTotal');
+        const remaining = sum(emailOnly, 'leadsRemaining');
+        if (!Number.isFinite(total) || total <= 0) return null;
+        const p = (1 - remaining / total) * 100;
+        // clamp
+        return Math.max(0, Math.min(100, p));
+      })();
+
       const campaignHealth = computeCampaignHealth(leadsRemaining);
       const accountHealth = computeAccountHealth({
         replyRate: emailSummary.rates.replyRate,
@@ -1013,7 +1024,7 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
           replyRate: emailSummary.rates.replyRate,
           positiveReplyRate: emailSummary.rates.positiveReplyRate,
           bounceRate: emailSummary.rates.bounceRate,
-          sequenceEndingDays
+          progressRate
         }
       };
     });
