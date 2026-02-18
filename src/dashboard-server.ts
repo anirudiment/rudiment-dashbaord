@@ -900,6 +900,13 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse) {
 async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
   const reqUrl = new URL(req.url ?? '/', `http://${req.headers.host}`);
 
+  // Public static assets (needed for /login styling + logo before auth)
+  // IMPORTANT: keep HTML pages protected (except /login route below).
+  // This only allows non-HTML files under dashboard/public to be served without auth.
+  if (reqUrl.pathname && !reqUrl.pathname.endsWith('/') && path.extname(reqUrl.pathname) && !reqUrl.pathname.endsWith('.html')) {
+    return serveStatic(req, res);
+  }
+
   // Public routes
   if (reqUrl.pathname === '/login' || reqUrl.pathname === '/login/') {
     // If already logged in, go home.

@@ -6,18 +6,109 @@
     <title>Rudiment Monitor — Login</title>
     <link rel="stylesheet" href="/styles.css" />
     <style>
-      /* Login-only tweaks (everything else is shared via styles.css) */
-      .authTitle {
+      /* Login page should be pitch black behind the centered card */
+      body {
+        background: #000000;
+      }
+
+      /* Make the header feel like the rest of the app */
+      .header {
+        background: #000000;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      /* Centered login card (subtle frosted look) */
+      .loginWrap {
+        min-height: calc(100vh - 80px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px 0;
+      }
+
+      .loginCard {
+        width: 100%;
+        max-width: 440px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        border-radius: 16px;
+        padding: 20px;
+        box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
+        position: relative;
+        overflow: hidden;
+      }
+
+      /* Rudiment accent line */
+      .loginCard::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 2px;
+        background: linear-gradient(90deg, var(--rudiment-blue), var(--rudiment-green));
+        opacity: 0.9;
+      }
+
+      .loginTitle {
         margin: 0;
         font-size: 18px;
         font-weight: 750;
         letter-spacing: -0.1px;
+        color: rgba(255, 255, 255, 0.94);
       }
 
-      .authFooter {
+      .loginHint {
+        margin: 8px 0 14px;
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.62);
+      }
+
+      .loginField {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin: 10px 0;
+      }
+
+      .loginLabel {
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.62);
+      }
+
+      .loginInput {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(0, 0, 0, 0.35);
+        color: rgba(255, 255, 255, 0.92);
+        outline: none;
+      }
+
+      .loginInput:focus {
+        border-color: rgba(11, 211, 242, 0.55);
+        box-shadow: 0 0 0 3px rgba(11, 211, 242, 0.14);
+      }
+
+      .loginActions {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .loginError {
+        margin-top: 10px;
+        font-size: 13px;
+        color: #fecaca;
+      }
+
+      .loginFooter {
         margin-top: 12px;
         font-size: 12px;
-        color: rgba(255, 255, 255, 0.50);
+        color: rgba(255, 255, 255, 0.44);
       }
     </style>
   </head>
@@ -31,28 +122,28 @@
     </header>
 
     <main class="container">
-      <div class="authWrap">
-        <div class="panel authCard">
-          <h1 class="authTitle">Sign in</h1>
-          <p class="authHint">Use the username and password provided by Rudiment.</p>
+      <div class="loginWrap">
+        <div class="loginCard">
+          <h1 class="loginTitle">Sign in</h1>
+          <p class="loginHint">Use the username and password provided by Rudiment.</p>
 
           <form id="loginForm">
-            <div class="formField">
-              <label class="formLabel" for="username">Username</label>
-              <input class="input" id="username" name="username" autocomplete="username" />
+            <div class="loginField">
+              <label class="loginLabel" for="username">Username</label>
+              <input class="loginInput" id="username" name="username" autocomplete="username" />
             </div>
-            <div class="formField">
-              <label class="formLabel" for="password">Password</label>
-              <input class="input" id="password" name="password" type="password" autocomplete="current-password" />
+            <div class="loginField">
+              <label class="loginLabel" for="password">Password</label>
+              <input class="loginInput" id="password" name="password" type="password" autocomplete="current-password" />
             </div>
 
-            <div class="authActions">
+            <div class="loginActions">
               <button class="btn" id="loginBtn" type="submit">Login</button>
               <span id="status" class="status" style="margin:0;">Ready</span>
             </div>
-            <div id="error" class="authError" style="display:none;"></div>
+            <div id="error" class="loginError" style="display:none;"></div>
 
-            <div class="authFooter">Rudiment Monitoring</div>
+            <div class="loginFooter">Rudiment Monitoring</div>
           </form>
         </div>
       </div>
