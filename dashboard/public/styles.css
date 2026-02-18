@@ -186,6 +186,68 @@ body {
   outline-offset: 1px;
 }
 
+/* Text inputs (login page, etc.) */
+.input {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.92);
+  outline: none;
+}
+
+.input:focus {
+  outline: 2px solid rgba(11, 211, 242, 0.55);
+  outline-offset: 1px;
+}
+
+.formField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.formLabel {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Auth (login) layout */
+.authWrap {
+  min-height: calc(100vh - 80px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 0;
+}
+
+.authCard {
+  width: 100%;
+  max-width: 460px;
+}
+
+.authHint {
+  margin: 6px 0 14px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.authActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.authError {
+  margin-top: 10px;
+  font-size: 13px;
+  color: #fecaca;
+}
+
 .btn {
   border: none;
   border-radius: 10px;
