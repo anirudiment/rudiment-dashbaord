@@ -15,6 +15,56 @@ Then open:
 
 - http://localhost:8787
 
+## Client access (login + password)
+
+The dashboard supports **role-based login**:
+
+- **Client users**: can only see *their own* dashboard (one clientId)
+- **Admin users**: can see all clients + access **Monitor KPI**
+
+### Required environment variables
+
+```bash
+# Required for auth. This signs the session cookie.
+# Generate a random long value (>= 32 chars).
+DASHBOARD_AUTH_SECRET=...
+
+# JSON array of users. Store bcrypt hashes (not plaintext).
+# Example:
+# [{"username":"admin","passwordHash":"$2a$10$...","clientId":"*","role":"admin"},
+#  {"username":"confetti","passwordHash":"$2a$10$...","clientId":"client3","role":"client"}]
+DASHBOARD_USERS_JSON=[...]
+
+# Optional: session length in seconds (default 7 days)
+DASHBOARD_SESSION_MAX_AGE_SEC=604800
+
+# Optional: set to 0 if you're testing login over plain http locally
+DASHBOARD_COOKIE_SECURE=0
+```
+
+### Generate a bcrypt password hash
+
+Run:
+
+```bash
+node -e "const bcrypt=require('bcryptjs'); const pw=process.argv[1]; console.log(bcrypt.hashSync(pw,10));" "YOUR_PASSWORD_HERE"
+```
+
+### AWS App Runner setup
+
+In **App Runner → Service → Configuration → Environment variables** set:
+
+- `DASHBOARD_AUTH_SECRET`
+- `DASHBOARD_USERS_JSON`
+
+Then deploy a new version.
+
+### Notes / behavior
+
+- Unauthenticated visitors are redirected to `/login`.
+- `/monitor` and `/api/monitor` are **admin-only**.
+- Client users cannot request another `clientId` (server returns **403 Forbidden**).
+
 ## HeyReach 429 / rate-limit notes (stability)
 
 HeyReach’s **per-campaign stats** endpoint can return **HTTP 429** if the dashboard refreshes a lot (the API is rate limited).

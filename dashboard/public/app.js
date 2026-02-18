@@ -79,6 +79,11 @@ let chartAnimRaf = null;
 async function api(path) {
   const res = await fetch(path, { cache: 'no-store' });
   if (!res.ok) {
+    if (res.status === 401) {
+      const next = `${window.location.pathname}${window.location.search || ''}`;
+      window.location.href = `/login?next=${encodeURIComponent(next)}`;
+      throw new Error('Unauthorized');
+    }
     let body;
     try { body = await res.json(); } catch { body = { error: res.statusText }; }
     throw new Error(body?.error || `Request failed: ${res.status}`);
@@ -589,7 +594,46 @@ async function refresh() {
 }
 
 async function main() {
+  // Identify user role so we can hide internal-only UI elements.
+  try {
+    const meRes = await fetch('/api/me', { cache: 'no-store' });
+    if (meRes.status === 401) {
+      const next = `${window.location.pathname}${window.location.search || ''}`;
+      window.location.href = `/login?next=${encodeURIComponent(next)}`;
+      return;
+    }
+    if (meRes.ok) {
+      const me = await meRes.json().catch(() => null);
+      const role = String(me?.user?.role || 'client').toLowerCase();
+      if (role !== 'admin') {
+        // Hide Monitor KPI tab for client users.
+        const tabs = document.querySelectorAll('a.navTab');
+        for (const t of tabs) {
+          if (String(t.getAttribute('href') || '') === '/monitor') {
+            t.style.display = 'none';
+          }
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
   await loadClients();
+
+  // Logout
+  const logoutBtn = $('logoutBtn');
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', async () => {
+      try {
+        await fetch('/api/logout', { method: 'POST' });
+      } catch {
+        // ignore
+      }
+      window.location.href = '/login?next=%2F';
+    });
+  }
+
   $('refreshBtn').addEventListener('click', refresh);
   $('clientSelect').addEventListener('change', refresh);
   $('daysSelect').addEventListener('change', refresh);

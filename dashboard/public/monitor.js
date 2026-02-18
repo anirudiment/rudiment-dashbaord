@@ -42,6 +42,11 @@ function setStatus(msg) {
 async function api(path) {
   const res = await fetch(path, { cache: 'no-store' });
   if (!res.ok) {
+    if (res.status === 401) {
+      const next = `${window.location.pathname}${window.location.search || ''}`;
+      window.location.href = `/login?next=${encodeURIComponent(next)}`;
+      throw new Error('Unauthorized');
+    }
     let body;
     try { body = await res.json(); } catch { body = { error: res.statusText }; }
     throw new Error(body?.error || `Request failed: ${res.status}`);

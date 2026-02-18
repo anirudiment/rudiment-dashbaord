@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rudiment Monitor — Login</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <style>
+      /* Minimal layout tweaks specific to login */
+      .loginWrap {
+        min-height: calc(100vh - 80px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px 0;
+      }
+      .loginCard {
+        width: 100%;
+        max-width: 440px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 14px;
+        padding: 18px;
+      }
+      .loginTitle {
+        font-size: 18px;
+        font-weight: 650;
+        margin: 0 0 10px;
+      }
+      .loginHint {
+        opacity: 0.75;
+        font-size: 13px;
+        margin: 0 0 14px;
+      }
+      .loginField {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin: 10px 0;
+      }
+      .loginLabel {
+        font-size: 12px;
+        opacity: 0.75;
+      }
+      .loginInput {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(0, 0, 0, 0.25);
+        color: rgba(255, 255, 255, 0.92);
+        outline: none;
+      }
+      .loginInput:focus {
+        border-color: rgba(11, 211, 242, 0.55);
+        box-shadow: 0 0 0 3px rgba(11, 211, 242, 0.14);
+      }
+      .loginActions {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-top: 14px;
+      }
+      .loginError {
+        margin-top: 10px;
+        font-size: 13px;
+        color: #fecaca;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="header">
+      <div class="container header__row">
+        <div class="header__left">
+          <img class="header__logo" src="/rudiment-logo-white.png" alt="Rudiment" />
+        </div>
+      </div>
+    </header>
+
+    <main class="container">
+      <div class="loginWrap">
+        <div class="loginCard">
+          <h1 class="loginTitle">Sign in</h1>
+          <p class="loginHint">Use the username and password provided by Rudiment.</p>
+
+          <form id="loginForm">
+            <div class="loginField">
+              <label class="loginLabel" for="username">Username</label>
+              <input class="loginInput" id="username" name="username" autocomplete="username" />
+            </div>
+            <div class="loginField">
+              <label class="loginLabel" for="password">Password</label>
+              <input class="loginInput" id="password" name="password" type="password" autocomplete="current-password" />
+            </div>
+
+            <div class="loginActions">
+              <button class="btn" id="loginBtn" type="submit">Login</button>
+              <span id="status" class="status" style="margin:0;">Ready</span>
+            </div>
+            <div id="error" class="loginError" style="display:none;"></div>
+          </form>
+        </div>
+      </div>
+    </main>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+
+      function getNext() {
+        try {
+          const q = new URLSearchParams(window.location.search || '');
+          const next = q.get('next');
+          // basic guard: only allow same-origin relative paths
+          if (!next || !next.startsWith('/')) return '/';
+          return next;
+        } catch {
+          return '/';
+        }
+      }
+
+      function setStatus(msg) {
+        $('status').textContent = msg;
+      }
+
+      function showError(msg) {
+        const el = $('error');
+        el.style.display = 'block';
+        el.textContent = msg;
+      }
+
+      async function login(username, password) {
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.error || `Login failed (${res.status})`);
+        return data;
+      }
+
+      $('loginForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        $('error').style.display = 'none';
+        setStatus('Logging in…');
+        $('loginBtn').disabled = true;
+
+        try {
+          const username = String($('username').value || '').trim();
+          const password = String($('password').value || '');
+          if (!username || !password) throw new Error('Missing username or password');
+          await login(username, password);
+          window.location.href = getNext();
+        } catch (err) {
+          console.error(err);
+          showError(err.message || String(err));
+          setStatus('Ready');
+        } finally {
+          $('loginBtn').disabled = false;
+        }
+      });
+
+      // Focus username by default
+      try { $('username').focus(); } catch {}
+    </script>
+  </body>
+</html>

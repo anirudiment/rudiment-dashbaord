@@ -3,7 +3,9 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import url from 'url';
+import crypto from 'crypto';
 import * as dotenv from 'dotenv';
+import bcrypt from 'bcryptjs';
 import { getActiveClients } from './config/clients.config';
 import { EmailBisonService } from './services/emailbison.service';
 import { HeyReachService } from './services/heyreach.service';
@@ -23,6 +25,197 @@ import {
 } from './monitors/health.classifier';
 
 dotenv.config();
+
+/**
+ * Dashboard auth (MVP): signed cookie session + bcrypt password verification.
+ *
+ * Env vars:
+ *  - DASHBOARD_AUTH_SECRET: required for signing cookies
+ *  - DASHBOARD_USERS_JSON: JSON array of users:
+ *      [{"username":"confetti","passwordHash":"$2a$...","clientId":"client3","role":"client"},
+ *       {"username":"admin","passwordHash":"$2a$...","clientId":"*","role":"admin"}]
+ */
+
+type DashboardRole = 'admin' | 'client';
+
+type DashboardUser = {
+  username: string;
+  passwordHash: string;
+  clientId: string; // for admin can be '*'
+  role: DashboardRole;
+};
+
+type DashboardSession = {
+  username: string;
+  role: DashboardRole;
+  clientId: string;
+  exp: number; // epoch seconds
+};
+
+const authSecret = String(process.env.DASHBOARD_AUTH_SECRET ?? '').trim();
+const authEnabled = !!authSecret;
+const authCookieName = 'dash_session';
+const authSessionMaxAgeSec = Math.max(60, Number(process.env.DASHBOARD_SESSION_MAX_AGE_SEC ?? 60 * 60 * 24 * 7)); // default 7d
+
+function getConfiguredUsers(): DashboardUser[] {
+  const raw = String(process.env.DASHBOARD_USERS_JSON ?? '').trim();
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    const arr = Array.isArray(parsed) ? parsed : [];
+    return arr
+      .map((u: any) => ({
+        username: String(u?.username ?? '').trim(),
+        passwordHash: String(u?.passwordHash ?? '').trim(),
+        clientId: String(u?.clientId ?? '').trim(),
+        role: (String(u?.role ?? 'client').trim().toLowerCase() as DashboardRole) || 'client'
+      }))
+      .filter(u => u.username && u.passwordHash && u.clientId && (u.role === 'admin' || u.role === 'client'));
+  } catch {
+    return [];
+  }
+}
+
+function base64UrlEncode(buf: Buffer) {
+  return buf
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function base64UrlDecode(s: string) {
+  const padded = s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4);
+  return Buffer.from(padded, 'base64');
+}
+
+function signSession(session: DashboardSession) {
+  if (!authSecret) throw new Error('DASHBOARD_AUTH_SECRET missing');
+  const payload = base64UrlEncode(Buffer.from(JSON.stringify(session), 'utf8'));
+  const sig = base64UrlEncode(crypto.createHmac('sha256', authSecret).update(payload).digest());
+  return `${payload}.${sig}`;
+}
+
+function verifySession(token: string): DashboardSession | null {
+  if (!authSecret) return null;
+  const parts = String(token || '').split('.');
+  if (parts.length !== 2) return null;
+  const [payload, sig] = parts;
+
+  const expectedSig = base64UrlEncode(crypto.createHmac('sha256', authSecret).update(payload).digest());
+  // constant-time compare
+  try {
+    const a = Buffer.from(sig);
+    const b = Buffer.from(expectedSig);
+    if (a.length !== b.length) return null;
+    if (!crypto.timingSafeEqual(a, b)) return null;
+  } catch {
+    return null;
+  }
+
+  try {
+    const json = base64UrlDecode(payload).toString('utf8');
+    const s = JSON.parse(json);
+    const out: DashboardSession = {
+      username: String(s?.username ?? ''),
+      role: (String(s?.role ?? 'client').toLowerCase() as DashboardRole) || 'client',
+      clientId: String(s?.clientId ?? ''),
+      exp: Number(s?.exp ?? 0)
+    };
+    if (!out.username || !out.clientId) return null;
+    if (out.role !== 'admin' && out.role !== 'client') return null;
+    const now = Math.floor(Date.now() / 1000);
+    if (!Number.isFinite(out.exp) || out.exp < now) return null;
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+function parseCookies(req: http.IncomingMessage): Record<string, string> {
+  const header = String(req.headers.cookie ?? '');
+  const out: Record<string, string> = {};
+  if (!header) return out;
+  for (const part of header.split(';')) {
+    const [k, ...rest] = part.trim().split('=');
+    if (!k) continue;
+    out[k] = decodeURIComponent(rest.join('=') || '');
+  }
+  return out;
+}
+
+function setCookie(res: http.ServerResponse, cookie: string) {
+  const existing = res.getHeader('Set-Cookie');
+  if (!existing) {
+    res.setHeader('Set-Cookie', cookie);
+    return;
+  }
+  if (Array.isArray(existing)) {
+    res.setHeader('Set-Cookie', [...existing, cookie]);
+    return;
+  }
+  res.setHeader('Set-Cookie', [String(existing), cookie]);
+}
+
+function buildSessionCookie(token: string | null) {
+  // App Runner is typically behind HTTPS at the edge; still safe to always set Secure.
+  // If you need local HTTP dev, set DASHBOARD_COOKIE_SECURE=0.
+  const secure = String(process.env.DASHBOARD_COOKIE_SECURE ?? '1') !== '0';
+  const attrs = [
+    `${authCookieName}=${encodeURIComponent(token ?? '')}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    secure ? 'Secure' : '',
+    token ? `Max-Age=${authSessionMaxAgeSec}` : 'Max-Age=0'
+  ].filter(Boolean);
+  return attrs.join('; ');
+}
+
+function getSession(req: http.IncomingMessage): DashboardSession | null {
+  if (!authEnabled) return null;
+  const cookies = parseCookies(req);
+  const token = cookies[authCookieName];
+  if (!token) return null;
+  return verifySession(token);
+}
+
+function redirectToLogin(res: http.ServerResponse, nextPath: string) {
+  const loc = `/login?next=${encodeURIComponent(nextPath || '/')}`;
+  res.writeHead(302, { Location: loc, 'Cache-Control': 'no-store' });
+  res.end();
+}
+
+function requireAuth(req: http.IncomingMessage, res: http.ServerResponse): DashboardSession | null {
+  if (!authEnabled) return { username: 'anonymous', role: 'admin', clientId: '*', exp: 4102444800 };
+
+  const session = getSession(req);
+  if (session) return session;
+
+  // For API requests: return JSON 401.
+  // For page requests: redirect to /login
+  const reqUrl = new URL(req.url ?? '/', `http://${req.headers.host}`);
+  if (reqUrl.pathname.startsWith('/api/')) {
+    sendJson(res, 401, { error: 'Unauthorized' });
+    return null;
+  }
+
+  redirectToLogin(res, reqUrl.pathname + reqUrl.search);
+  return null;
+}
+
+function requireAdmin(session: DashboardSession, res: http.ServerResponse) {
+  if (session.role === 'admin') return true;
+  sendJson(res, 403, { error: 'Forbidden' });
+  return false;
+}
+
+function requireClientScope(session: DashboardSession, requestedClientId: string, res: http.ServerResponse) {
+  if (session.role === 'admin') return true;
+  if (session.clientId === requestedClientId) return true;
+  sendJson(res, 403, { error: 'Forbidden' });
+  return false;
+}
 
 // Clay pipeline attribution (DynamoDB in prod if configured; file-backed fallback for local dev)
 const clayDdbTable = String(process.env.CLAY_ATTRIBUTION_DDB_TABLE ?? '').trim();
@@ -670,8 +863,13 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse) {
 
   let filePath = safePath;
 
+  // Convenience route: serve /login from /login.html
+  if (pathname === '/login' || pathname === '/login/') {
+    filePath = path.join(publicDir, 'login.html');
+  }
+
   // Convenience route: serve /monitor from /monitor.html
-  if (pathname === '/monitor' || pathname === '/monitor/') {
+  else if (pathname === '/monitor' || pathname === '/monitor/') {
     filePath = path.join(publicDir, 'monitor.html');
   }
 
@@ -702,6 +900,194 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse) {
 async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
   const reqUrl = new URL(req.url ?? '/', `http://${req.headers.host}`);
 
+  // Public routes
+  if (reqUrl.pathname === '/login' || reqUrl.pathname === '/login/') {
+    // If already logged in, go home.
+    if (authEnabled) {
+      const s = getSession(req);
+      if (s) {
+        res.writeHead(302, { Location: '/', 'Cache-Control': 'no-store' });
+        res.end();
+        return;
+      }
+    }
+    // serve static /login.html
+    return serveStatic(req, res);
+  }
+
+  // Machine-to-machine routes (no dashboard login; protected by their own shared secret)
+  // NOTE: Keep these above requireAuth() so webhooks can call them.
+  if (reqUrl.pathname === '/api/clay/attribution' || reqUrl.pathname === '/api/clay/attribution/debug') {
+    // Clay pipeline attribution webhook receiver.
+    // Clay should POST:
+    // {
+    //   "clientId": "client2",
+    //   "email": "person@company.com",
+    //   "dealAmount": 10000,
+    //   "dealStage": "7 - Agreement Signed/Payment Received",
+    //   "updatedAt": "2026-02-09T...Z"
+    // }
+    // Protect with header: x-clay-secret: <CLAY_WEBHOOK_SECRET>
+    if (reqUrl.pathname === '/api/clay/attribution') {
+      if ((req.method || 'GET').toUpperCase() !== 'POST') {
+        return sendJson(res, 405, { error: 'Method not allowed' });
+      }
+
+      const expected = String(process.env.CLAY_WEBHOOK_SECRET ?? '').trim();
+      if (!expected) {
+        return sendJson(res, 500, { error: 'CLAY_WEBHOOK_SECRET is not configured on server' });
+      }
+      const provided = String(req.headers['x-clay-secret'] ?? '').trim();
+      if (provided !== expected) {
+        return sendJson(res, 401, { error: 'Unauthorized' });
+      }
+
+      try {
+        const raw = await getRawBody(req);
+        const body = raw ? JSON.parse(raw) : {};
+
+        const clientId = String(body?.clientId ?? '').trim();
+        const email = String(body?.email ?? '').trim();
+        if (!clientId || !email) {
+          return sendJson(res, 400, { error: 'Missing clientId or email' });
+        }
+
+        // Scope: only client2 (Business Bricks) for now.
+        if (clientId !== 'client2') {
+          return sendJson(res, 400, { error: 'Unsupported clientId (only client2 supported for now)' });
+        }
+
+        const dealAmountRaw = body?.dealAmount;
+        // Accept numbers or currency-like strings ("$12,345", "US$12,345", etc.)
+        // Be careful: Number(null) === 0, so treat null/undefined/empty as null.
+        const dealAmountStr = dealAmountRaw == null ? '' : String(dealAmountRaw).trim();
+        const cleaned = dealAmountStr.replace(/[^0-9.\-]/g, '');
+        const dealAmount = cleaned ? (Number.isFinite(Number(cleaned)) ? Number(cleaned) : null) : null;
+        const dealStage = body?.dealStage != null ? String(body.dealStage) : null;
+        const updatedAt = body?.updatedAt != null ? String(body.updatedAt) : new Date().toISOString();
+
+        await Promise.resolve(clayAttributionStore.upsert({ clientId, email, dealAmount, dealStage, updatedAt }));
+        return sendJson(res, 200, { ok: true });
+      } catch (e: any) {
+        return sendJson(res, 400, { error: e?.message ?? String(e) });
+      }
+    }
+
+    // Clay attribution debug reader (protected by same secret header).
+    // Useful to verify that the server can READ the DynamoDB record after Clay writes.
+    // GET /api/clay/attribution/debug?clientId=client2&email=someone@company.com
+    if (reqUrl.pathname === '/api/clay/attribution/debug') {
+      if ((req.method || 'GET').toUpperCase() !== 'GET') {
+        return sendJson(res, 405, { error: 'Method not allowed' });
+      }
+
+      const expected = String(process.env.CLAY_WEBHOOK_SECRET ?? '').trim();
+      if (!expected) {
+        return sendJson(res, 500, { error: 'CLAY_WEBHOOK_SECRET is not configured on server' });
+      }
+      const provided = String(req.headers['x-clay-secret'] ?? '').trim();
+      if (provided !== expected) {
+        return sendJson(res, 401, { error: 'Unauthorized' });
+      }
+
+      const clientId = String(reqUrl.searchParams.get('clientId') ?? '').trim();
+      const email = String(reqUrl.searchParams.get('email') ?? '').trim();
+      if (!clientId || !email) {
+        return sendJson(res, 400, { error: 'Missing clientId or email' });
+      }
+
+      try {
+        const record = await clayStoreGet(clientId, email);
+        return sendJson(res, 200, { ok: true, record });
+      } catch (e: any) {
+        return sendJson(res, 500, { ok: false, error: e?.message ?? String(e) });
+      }
+    }
+  }
+
+  // Auth API routes
+  if (reqUrl.pathname === '/api/login') {
+    if ((req.method || 'GET').toUpperCase() !== 'POST') {
+      return sendJson(res, 405, { error: 'Method not allowed' });
+    }
+    if (!authEnabled) {
+      return sendJson(res, 500, { error: 'Auth is not enabled (missing DASHBOARD_AUTH_SECRET)' });
+    }
+    const users = getConfiguredUsers();
+    if (!users.length) {
+      return sendJson(res, 500, { error: 'No dashboard users configured (missing DASHBOARD_USERS_JSON)' });
+    }
+
+    try {
+      const raw = await getRawBody(req);
+      const body = raw ? JSON.parse(raw) : {};
+      const username = String(body?.username ?? '').trim();
+      const password = String(body?.password ?? '');
+      if (!username || !password) return sendJson(res, 400, { error: 'Missing username or password' });
+
+      const user = users.find(u => u.username === username);
+      // Avoid username enumeration: do a fake compare when user missing.
+      const hash = user?.passwordHash || '$2a$10$CwTycUXWue0Thq9StjUM0uJ8YqG8m0l0r7JtN6xYp1u9lNwOe7u5K';
+      const ok = await bcrypt.compare(password, hash);
+      if (!ok || !user) return sendJson(res, 401, { error: 'Invalid username or password' });
+
+      const session: DashboardSession = {
+        username: user.username,
+        role: user.role,
+        clientId: user.clientId,
+        exp: Math.floor(Date.now() / 1000) + authSessionMaxAgeSec
+      };
+      const token = signSession(session);
+      setCookie(res, buildSessionCookie(token));
+      return sendJson(res, 200, { ok: true, user: { username: session.username, role: session.role, clientId: session.clientId } });
+    } catch (e: any) {
+      return sendJson(res, 400, { error: e?.message ?? String(e) });
+    }
+  }
+
+  if (reqUrl.pathname === '/api/logout') {
+    if ((req.method || 'GET').toUpperCase() !== 'POST') {
+      return sendJson(res, 405, { error: 'Method not allowed' });
+    }
+    // Clear cookie even if auth isn't enabled.
+    setCookie(res, buildSessionCookie(null));
+    return sendJson(res, 200, { ok: true });
+  }
+
+  if (reqUrl.pathname === '/api/me') {
+    const session = requireAuth(req, res);
+    if (!session) return;
+    // For client users, resolve client name for convenience.
+    const activeClients = getActiveClients();
+    const clientName = session.clientId === '*'
+      ? null
+      : (activeClients.find(c => c.id === session.clientId)?.config?.name ?? null);
+    return sendJson(res, 200, { ok: true, user: { username: session.username, role: session.role, clientId: session.clientId, clientName } });
+  }
+
+  // Protect monitor page (internal only)
+  if (reqUrl.pathname === '/monitor' || reqUrl.pathname === '/monitor/') {
+    const session = requireAuth(req, res);
+    if (!session) return;
+    if (session.role !== 'admin') {
+      // For client logins, treat it like a normal navigation mistake.
+      res.writeHead(302, { Location: '/', 'Cache-Control': 'no-store' });
+      res.end();
+      return;
+    }
+    return serveStatic(req, res);
+  }
+
+  // From here on, require auth for everything else (UI + APIs)
+  const session = requireAuth(req, res);
+  if (!session) return;
+
+  // (Optional) Hide /monitor static route from non-admin even if they try to fetch it directly.
+  // We already block the /monitor page above, but also block these two assets defensively.
+  if (reqUrl.pathname === '/monitor.html' || reqUrl.pathname === '/monitor.js') {
+    if (!requireAdmin(session, res)) return;
+  }
+
   const status = (reqUrl.searchParams.get('status') || 'active').toLowerCase();
   const { startDate, endDate, days, isLifetime } = parseDateRange(reqUrl.searchParams) as any;
 
@@ -713,7 +1099,12 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
   // API routes
   if (reqUrl.pathname === '/api/clients') {
     // SECURITY: never expose API keys to the browser.
-    const activeClients = getActiveClients().map(c => ({
+    const activeClientsAll = getActiveClients();
+    const scoped = session.role === 'admin'
+      ? activeClientsAll
+      : activeClientsAll.filter(c => c.id === session.clientId);
+
+    const activeClients = scoped.map(c => ({
       id: c.id,
       name: c.config.name,
       platforms: Object.fromEntries(
@@ -784,95 +1175,10 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
     });
   };
 
-  // Clay pipeline attribution webhook receiver.
-  // Clay should POST:
-  // {
-  //   "clientId": "client2",
-  //   "email": "person@company.com",
-  //   "dealAmount": 10000,
-  //   "dealStage": "7 - Agreement Signed/Payment Received",
-  //   "updatedAt": "2026-02-09T...Z"
-  // }
-  // Protect with header: x-clay-secret: <CLAY_WEBHOOK_SECRET>
-  if (reqUrl.pathname === '/api/clay/attribution') {
-    if ((req.method || 'GET').toUpperCase() !== 'POST') {
-      return sendJson(res, 405, { error: 'Method not allowed' });
-    }
-
-    const expected = String(process.env.CLAY_WEBHOOK_SECRET ?? '').trim();
-    if (!expected) {
-      return sendJson(res, 500, { error: 'CLAY_WEBHOOK_SECRET is not configured on server' });
-    }
-    const provided = String(req.headers['x-clay-secret'] ?? '').trim();
-    if (provided !== expected) {
-      return sendJson(res, 401, { error: 'Unauthorized' });
-    }
-
-    try {
-      const raw = await getRawBody(req);
-      const body = raw ? JSON.parse(raw) : {};
-
-      const clientId = String(body?.clientId ?? '').trim();
-      const email = String(body?.email ?? '').trim();
-      if (!clientId || !email) {
-        return sendJson(res, 400, { error: 'Missing clientId or email' });
-      }
-
-      // Scope: only client2 (Business Bricks) for now.
-      if (clientId !== 'client2') {
-        return sendJson(res, 400, { error: 'Unsupported clientId (only client2 supported for now)' });
-      }
-
-      const dealAmountRaw = body?.dealAmount;
-      // Accept numbers or currency-like strings ("$12,345", "US$12,345", etc.)
-      // Be careful: Number(null) === 0, so treat null/undefined/empty as null.
-      const dealAmountStr = dealAmountRaw == null ? '' : String(dealAmountRaw).trim();
-      const cleaned = dealAmountStr.replace(/[^0-9.\-]/g, '');
-      const dealAmount = cleaned ? (Number.isFinite(Number(cleaned)) ? Number(cleaned) : null) : null;
-      const dealStage = body?.dealStage != null ? String(body.dealStage) : null;
-      const updatedAt = body?.updatedAt != null ? String(body.updatedAt) : new Date().toISOString();
-
-      await Promise.resolve(clayAttributionStore.upsert({ clientId, email, dealAmount, dealStage, updatedAt }));
-      return sendJson(res, 200, { ok: true });
-    } catch (e: any) {
-      return sendJson(res, 400, { error: e?.message ?? String(e) });
-    }
-  }
-
-  // Clay attribution debug reader (protected by same secret header).
-  // Useful to verify that the server can READ the DynamoDB record after Clay writes.
-  // GET /api/clay/attribution/debug?clientId=client2&email=someone@company.com
-  if (reqUrl.pathname === '/api/clay/attribution/debug') {
-    if ((req.method || 'GET').toUpperCase() !== 'GET') {
-      return sendJson(res, 405, { error: 'Method not allowed' });
-    }
-
-    const expected = String(process.env.CLAY_WEBHOOK_SECRET ?? '').trim();
-    if (!expected) {
-      return sendJson(res, 500, { error: 'CLAY_WEBHOOK_SECRET is not configured on server' });
-    }
-    const provided = String(req.headers['x-clay-secret'] ?? '').trim();
-    if (provided !== expected) {
-      return sendJson(res, 401, { error: 'Unauthorized' });
-    }
-
-    const clientId = String(reqUrl.searchParams.get('clientId') ?? '').trim();
-    const email = String(reqUrl.searchParams.get('email') ?? '').trim();
-    if (!clientId || !email) {
-      return sendJson(res, 400, { error: 'Missing clientId or email' });
-    }
-
-    try {
-      const record = await clayStoreGet(clientId, email);
-      return sendJson(res, 200, { ok: true, record });
-    } catch (e: any) {
-      return sendJson(res, 500, { ok: false, error: e?.message ?? String(e) });
-    }
-  }
-
   if (reqUrl.pathname === '/api/summary') {
     const clientId = reqUrl.searchParams.get('clientId') || '';
     if (!clientId) return sendJson(res, 400, { error: 'Missing clientId' });
+    if (!requireClientScope(session, clientId, res)) return;
     const data = await fetchClientMetrics({ clientId, startDate, endDate, days, isLifetime: !!isLifetime, status, includeHeyReachStats });
     if (!data) return sendJson(res, 404, { error: 'Unknown clientId' });
 
@@ -893,6 +1199,7 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
   // All-clients Monitor KPI dashboard endpoint.
   // GET /api/monitor?days=7
   if (reqUrl.pathname === '/api/monitor') {
+    if (!requireAdmin(session, res)) return;
     const channel = (String(reqUrl.searchParams.get('channel') ?? 'email').toLowerCase() as Channel) || 'email';
     const activeClients = getActiveClients();
     const statusAll = 'all';
@@ -1051,6 +1358,7 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
   if (reqUrl.pathname === '/api/replies') {
     const clientId = reqUrl.searchParams.get('clientId') || '';
     if (!clientId) return sendJson(res, 400, { error: 'Missing clientId' });
+    if (!requireClientScope(session, clientId, res)) return;
 
     const platform = (reqUrl.searchParams.get('platform') || 'emailbison').toLowerCase();
     const filter = (reqUrl.searchParams.get('filter') || 'replied').toLowerCase();
@@ -1160,6 +1468,9 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
   if (reqUrl.pathname === '/api/debug/reconcile') {
     if (process.env.DASHBOARD_DEBUG !== '1') return sendJson(res, 404, { error: 'Not found' });
 
+    // Debug endpoint should be admin-only.
+    if (!requireAdmin(session, res)) return;
+
     const clientId = reqUrl.searchParams.get('clientId') || '';
     if (!clientId) return sendJson(res, 400, { error: 'Missing clientId' });
 
@@ -1222,6 +1533,7 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
   if (reqUrl.pathname === '/api/campaigns') {
     const clientId = reqUrl.searchParams.get('clientId') || '';
     if (!clientId) return sendJson(res, 400, { error: 'Missing clientId' });
+    if (!requireClientScope(session, clientId, res)) return;
     const platform = reqUrl.searchParams.get('platform');
     const data = await fetchClientMetrics({ clientId, startDate, endDate, days, isLifetime: !!isLifetime, status, includeHeyReachStats });
     if (!data) return sendJson(res, 404, { error: 'Unknown clientId' });
@@ -1331,6 +1643,8 @@ async function handler(req: http.IncomingMessage, res: http.ServerResponse) {
   if (reqUrl.pathname === '/api/timeseries') {
     const clientId = reqUrl.searchParams.get('clientId') || '';
     if (!clientId) return sendJson(res, 400, { error: 'Missing clientId' });
+
+    if (!requireClientScope(session, clientId, res)) return;
 
     const data = await fetchClientMetrics({ clientId, startDate, endDate, days, isLifetime: !!isLifetime, status, includeHeyReachStats });
     if (!data) return sendJson(res, 404, { error: 'Unknown clientId' });
