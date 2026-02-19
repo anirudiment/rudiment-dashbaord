@@ -563,150 +563,175 @@ async function fetchClientMetrics(params: {
 
   const status = String(params.status || 'active').toLowerCase();
 
-  // Instantly
-  if (config.platforms.instantly?.enabled) {
-    try {
-      const svc = new InstantlyService(config.platforms.instantly.apiKey);
+  // Run all enabled platform fetches in parallel to reduce dashboard load time.
+  // Each fetch is independent; we collect results and merge after all settle.
+  // Capture platform configs in narrowed locals before async closures (TypeScript narrowing).
+  const instantlyCfg = config.platforms.instantly?.enabled ? config.platforms.instantly : null;
+  const emailbisonCfg = config.platforms.emailbison?.enabled ? config.platforms.emailbison : null;
+  const heyreachCfg = config.platforms.heyreach?.enabled ? config.platforms.heyreach : null;
 
-      // Instantly UI “Last N days” appears to exclude “today” and uses a slightly different
-      // day-boundary than our Utah-inclusive window. This causes mismatches for short ranges
-      // (e.g. 7 days). To match Instantly UI, we shift the end date back by 1 day and compute
-      // startDate as (endDate - days).
-      const instEndDate =
-        params.isLifetime || !params.endDate
-          ? params.endDate
-          : addDaysYmd(params.endDate, -1);
-      const instStartDate =
-        params.isLifetime || !instEndDate || !Number.isFinite(Number(params.days))
-          ? params.startDate
-          : addDaysYmd(instEndDate, -Number(params.days));
-
-      // Build campaign id set based on requested status
-      const campaigns = await svc.getCampaigns();
-      const ids = new Set(
-        campaigns
-          .filter((c: any) => {
-            const s = (c as any)?.status;
-            // Best-effort mapping for Instantly v2 numeric status.
-            const norm = typeof s === 'number' ? s : String(s ?? '').toLowerCase();
-            const isActive = norm === 1 || norm === 'active';
-            const isPaused = norm === 2 || norm === 'paused';
-            // Completed in Instantly can be represented by other numeric statuses; treat anything not active/paused as completed.
-            const isCompleted = !isActive && !isPaused;
-
-            if (status === 'all') return true;
-            if (status === 'active') return isActive;
-            if (status === 'paused') return isPaused;
-            if (status === 'completed') return isCompleted;
-            return isActive;
-          })
-          .map((c: any) => String((c as any)?.id ?? (c as any)?.campaign_id ?? ''))
-          .filter(Boolean)
-      );
-
-      metrics.push(
-        ...(await svc.getAllCampaignMetrics(clientName, {
-          startDate: instStartDate,
-          endDate: instEndDate,
-          windowDays: params.days,
-          activeCampaignIds: Array.from(ids)
-        }))
-      );
-    } catch (e) {
-      console.error(`[dashboard] Instantly fetch failed for ${params.clientId}:`, (e as any)?.message ?? e);
-    }
-  }
-
-  if (config.platforms.emailbison?.enabled) {
-    try {
-      const svc = new EmailBisonService(config.platforms.emailbison.apiKey);
-      // Fetch active campaigns and compute totals over the selected window.
-      // If no window is provided, EmailBisonService falls back to lifetime totals.
-      metrics.push(
-        ...(await svc.getAllCampaignMetrics(clientName, {
-          startDate: params.startDate,
-          endDate: params.endDate,
-          windowDays: params.days,
-          status
-        }))
-      );
-    } catch (e) {
-      console.error(`[dashboard] EmailBison fetch failed for ${params.clientId}:`, (e as any)?.message ?? e);
-    }
-  }
-  if (config.platforms.heyreach?.enabled) {
-    try {
-      const svc = new HeyReachService(config.platforms.heyreach.apiKey, {
-        bearerToken: (config.platforms.heyreach as any).bearerToken,
-        organizationUnits: (config.platforms.heyreach as any).organizationUnits
-      });
-
-      // Fetch HeyReach campaigns ONCE (this endpoint is rate-limited).
-      // We reuse it for:
-      //  - base campaign metrics
-      //  - aggregate stats
-      //  - per-campaign cache warmer trigger
-      const heyreachCampaigns = await withRetry(() => svc.getCampaigns(), { tries: 3, baseDelayMs: 500, label: 'heyreach.getCampaigns' });
-
-      // Build base campaign metrics from the campaign list without extra requests.
-      const norm = (s: unknown) => String(s ?? '').toUpperCase();
-      const isActive = (s: string) => s === 'IN_PROGRESS';
-      const isCompleted = (s: string) => s === 'FINISHED' || s === 'COMPLETED';
-      const isPaused = (s: string) => s === 'PAUSED' || s === 'STOPPED';
-
-      const statusFilter = String(params.status || 'active').toLowerCase();
-      const selectedCampaigns = (heyreachCampaigns as any[]).filter((c: any) => {
-        const s = norm(c?.status);
-        if (statusFilter === 'all') return true;
-        if (statusFilter === 'active') return isActive(s);
-        if (statusFilter === 'completed') return isCompleted(s);
-        if (statusFilter === 'paused') return isPaused(s);
-        return isActive(s);
-      });
-
-      metrics.push(...selectedCampaigns.map(c => svc.transformToMetrics(c as any, clientName)));
-
-      // Always try to compute an aggregate stats snapshot for HeyReach KPIs (1 request).
-      // This is much more stable than fetching per-campaign stats.
-      if (params.startDate && params.endDate) {
+  const instantlyFetch: Promise<CampaignMetrics[]> = instantlyCfg
+    ? (async () => {
         try {
-          const campaignIds = selectedCampaigns.map(c => Number((c as any)?.id ?? (c as any)?.campaign_id)).filter((n: any) => Number.isFinite(n));
-          const accountIds = Array.from(
-            new Set(
-              selectedCampaigns
-                .flatMap((c: any) => (c?.campaignAccountIds ?? []).map((x: any) => Number(x)))
-                .filter((n: any) => Number.isFinite(n))
-            )
-          );
-          const organizationUnitIds = Array.from(
-            new Set(selectedCampaigns.map((c: any) => Number(c?.organizationUnitId)).filter((n: any) => Number.isFinite(n)))
+          const svc = new InstantlyService(instantlyCfg.apiKey);
+
+          // Instantly UI "Last N days" appears to exclude "today" and uses a slightly different
+          // day-boundary than our Utah-inclusive window. This causes mismatches for short ranges
+          // (e.g. 7 days). To match Instantly UI, we shift the end date back by 1 day and compute
+          // startDate as (endDate - days).
+          const instEndDate =
+            params.isLifetime || !params.endDate
+              ? params.endDate
+              : addDaysYmd(params.endDate, -1);
+          const instStartDate =
+            params.isLifetime || !instEndDate || !Number.isFinite(Number(params.days))
+              ? params.startDate
+              : addDaysYmd(instEndDate, -Number(params.days));
+
+          // Build campaign id set based on requested status
+          const campaigns = await svc.getCampaigns();
+          const ids = new Set(
+            campaigns
+              .filter((c: any) => {
+                const s = (c as any)?.status;
+                // Best-effort mapping for Instantly v2 numeric status.
+                const norm = typeof s === 'number' ? s : String(s ?? '').toLowerCase();
+                const isActive = norm === 1 || norm === 'active';
+                const isPaused = norm === 2 || norm === 'paused';
+                // Completed in Instantly can be represented by other numeric statuses; treat anything not active/paused as completed.
+                const isCompleted = !isActive && !isPaused;
+
+                if (status === 'all') return true;
+                if (status === 'active') return isActive;
+                if (status === 'paused') return isPaused;
+                if (status === 'completed') return isCompleted;
+                return isActive;
+              })
+              .map((c: any) => String((c as any)?.id ?? (c as any)?.campaign_id ?? ''))
+              .filter(Boolean)
           );
 
-          if (campaignIds.length && accountIds.length) {
-            const startIso = new Date(params.startDate).toISOString();
-            const endIso = new Date(params.endDate).toISOString();
-            heyreachAggregate = await svc.getOverallStatsAggregatePublic({
-              campaignIds,
-              accountIds,
-              organizationUnitIds,
-              startDate: startIso,
-              endDate: endIso
-            });
-          }
-        } catch (e: any) {
-          // If rate-limited here, we still render campaigns table (lead totals) fine.
-          console.warn('[dashboard] HeyReach aggregate stats unavailable:', e?.message ?? e);
+          return await svc.getAllCampaignMetrics(clientName, {
+            startDate: instStartDate,
+            endDate: instEndDate,
+            windowDays: params.days,
+            activeCampaignIds: Array.from(ids)
+          });
+        } catch (e) {
+          console.error(`[dashboard] Instantly fetch failed for ${params.clientId}:`, (e as any)?.message ?? e);
+          return [];
         }
-      }
+      })()
+    : Promise.resolve([]);
 
-      // NOTE: Per-campaign HeyReach stats are merged in the /api/campaigns handler.
-      // We intentionally don't store them on the main cached value because /api/summary
-      // and /api/campaigns share a cache key and the stats may become available after
-      // the first response has already been cached.
-    } catch (e) {
-      console.error(`[dashboard] HeyReach fetch failed for ${params.clientId}:`, (e as any)?.message ?? e);
-    }
-  }
+  const emailbisonFetch: Promise<CampaignMetrics[]> = emailbisonCfg
+    ? (async () => {
+        try {
+          const svc = new EmailBisonService(emailbisonCfg.apiKey);
+          // Fetch active campaigns and compute totals over the selected window.
+          // If no window is provided, EmailBisonService falls back to lifetime totals.
+          return await svc.getAllCampaignMetrics(clientName, {
+            startDate: params.startDate,
+            endDate: params.endDate,
+            windowDays: params.days,
+            status
+          });
+        } catch (e) {
+          console.error(`[dashboard] EmailBison fetch failed for ${params.clientId}:`, (e as any)?.message ?? e);
+          return [];
+        }
+      })()
+    : Promise.resolve([]);
+
+  type HeyReachFetchResult = { metrics: CampaignMetrics[]; aggregate: any };
+  const heyreachFetch: Promise<HeyReachFetchResult> = heyreachCfg
+    ? (async (): Promise<HeyReachFetchResult> => {
+        try {
+          const svc = new HeyReachService(heyreachCfg.apiKey, {
+            bearerToken: (heyreachCfg as any).bearerToken,
+            organizationUnits: (heyreachCfg as any).organizationUnits
+          });
+
+          // Fetch HeyReach campaigns ONCE (this endpoint is rate-limited).
+          // We reuse it for:
+          //  - base campaign metrics
+          //  - aggregate stats
+          //  - per-campaign cache warmer trigger
+          const heyreachCampaigns = await withRetry(() => svc.getCampaigns(), { tries: 3, baseDelayMs: 500, label: 'heyreach.getCampaigns' });
+
+          // Build base campaign metrics from the campaign list without extra requests.
+          const norm = (s: unknown) => String(s ?? '').toUpperCase();
+          const isActive = (s: string) => s === 'IN_PROGRESS';
+          const isCompleted = (s: string) => s === 'FINISHED' || s === 'COMPLETED';
+          const isPaused = (s: string) => s === 'PAUSED' || s === 'STOPPED';
+
+          const statusFilter = String(params.status || 'active').toLowerCase();
+          const selectedCampaigns = (heyreachCampaigns as any[]).filter((c: any) => {
+            const s = norm(c?.status);
+            if (statusFilter === 'all') return true;
+            if (statusFilter === 'active') return isActive(s);
+            if (statusFilter === 'completed') return isCompleted(s);
+            if (statusFilter === 'paused') return isPaused(s);
+            return isActive(s);
+          });
+
+          const heyreachMetrics = selectedCampaigns.map(c => svc.transformToMetrics(c as any, clientName));
+
+          // Always try to compute an aggregate stats snapshot for HeyReach KPIs (1 request).
+          // This is much more stable than fetching per-campaign stats.
+          let aggregate: any = undefined;
+          if (params.startDate && params.endDate) {
+            try {
+              const campaignIds = selectedCampaigns.map(c => Number((c as any)?.id ?? (c as any)?.campaign_id)).filter((n: any) => Number.isFinite(n));
+              const accountIds = Array.from(
+                new Set(
+                  selectedCampaigns
+                    .flatMap((c: any) => (c?.campaignAccountIds ?? []).map((x: any) => Number(x)))
+                    .filter((n: any) => Number.isFinite(n))
+                )
+              );
+              const organizationUnitIds = Array.from(
+                new Set(selectedCampaigns.map((c: any) => Number(c?.organizationUnitId)).filter((n: any) => Number.isFinite(n)))
+              );
+
+              if (campaignIds.length && accountIds.length) {
+                const startIso = new Date(params.startDate).toISOString();
+                const endIso = new Date(params.endDate).toISOString();
+                aggregate = await svc.getOverallStatsAggregatePublic({
+                  campaignIds,
+                  accountIds,
+                  organizationUnitIds,
+                  startDate: startIso,
+                  endDate: endIso
+                });
+              }
+            } catch (e: any) {
+              // If rate-limited here, we still render campaigns table (lead totals) fine.
+              console.warn('[dashboard] HeyReach aggregate stats unavailable:', e?.message ?? e);
+            }
+          }
+
+          // NOTE: Per-campaign HeyReach stats are merged in the /api/campaigns handler.
+          // We intentionally don't store them on the main cached value because /api/summary
+          // and /api/campaigns share a cache key and the stats may become available after
+          // the first response has already been cached.
+          return { metrics: heyreachMetrics, aggregate };
+        } catch (e) {
+          console.error(`[dashboard] HeyReach fetch failed for ${params.clientId}:`, (e as any)?.message ?? e);
+          return { metrics: [], aggregate: undefined };
+        }
+      })()
+    : Promise.resolve({ metrics: [], aggregate: undefined });
+
+  // Wait for all platforms in parallel then merge results.
+  const [instantlyMetrics, emailbisonMetrics, heyreachResult] = await Promise.all([
+    instantlyFetch,
+    emailbisonFetch,
+    heyreachFetch
+  ]);
+
+  metrics.push(...instantlyMetrics, ...emailbisonMetrics, ...heyreachResult.metrics);
+  heyreachAggregate = heyreachResult.aggregate;
 
   const value = { clientId: params.clientId, clientName, metrics, heyreachAggregate };
   cache.set(key, { value, expiresAt: Date.now() + cacheTtlMs });

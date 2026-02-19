@@ -352,44 +352,46 @@ export class EmailBisonService {
 
       const campaignIds = filtered.map(c => Number(c?.id)).filter(n => Number.isFinite(n));
 
-      const result: CampaignMetrics[] = [];
+      // Fetch all campaign details in parallel. Each fetch is independent, so Promise.all
+      // cuts wall-clock time from (N campaigns × latency) to ~1 latency.
+      const result = await Promise.all(
+        campaignIds.map(async campaignId => {
+          // If a window is provided, prefer campaign details with start_date/end_date.
+          // This matches the platform UI more closely (e.g. it includes unique_replies and
+          // total_leads_contacted for that period). Falling back to event-stats sums can
+          // drift vs UI because it may represent *total replies* rather than *unique replies*.
+          if (window?.startDate && window?.endDate) {
+            try {
+              const details = await this.getCampaignDetails(campaignId, { startDate: window.startDate, endDate: window.endDate });
 
-      for (const campaignId of campaignIds) {
-        // If a window is provided, prefer campaign details with start_date/end_date.
-        // This matches the platform UI more closely (e.g. it includes unique_replies and
-        // total_leads_contacted for that period). Falling back to event-stats sums can
-        // drift vs UI because it may represent *total replies* rather than *unique replies*.
-        if (window?.startDate && window?.endDate) {
-          try {
-            const details = await this.getCampaignDetails(campaignId, { startDate: window.startDate, endDate: window.endDate });
+              const sent = Number(details?.emails_sent ?? 0);
+              const bounced = Number(details?.bounced ?? 0);
+              const uniqueReplies = Number(details?.unique_replies ?? 0);
+              const opened = Number(details?.unique_opens ?? details?.opened ?? 0);
+              const interested = Number(details?.interested ?? 0);
 
-            const sent = Number(details?.emails_sent ?? 0);
-            const bounced = Number(details?.bounced ?? 0);
-            const uniqueReplies = Number(details?.unique_replies ?? 0);
-            const opened = Number(details?.unique_opens ?? details?.opened ?? 0);
-            const interested = Number(details?.interested ?? 0);
-
-            result.push({
-              ...this.transformToMetrics(details, {
-                sent,
-                bounced,
-                replied: uniqueReplies,
-                opened,
-                interested
-              }),
-              windowDays: window.windowDays
-            });
-          } catch {
-            // fallback to lifetime details
+              return {
+                ...this.transformToMetrics(details, {
+                  sent,
+                  bounced,
+                  replied: uniqueReplies,
+                  opened,
+                  interested
+                }),
+                windowDays: window.windowDays
+              } as CampaignMetrics;
+            } catch {
+              // fallback to lifetime details
+              const details = await this.getCampaignDetails(campaignId);
+              return { ...this.transformToMetrics(details), windowDays: window.windowDays } as CampaignMetrics;
+            }
+          } else {
+            // Lifetime totals only
             const details = await this.getCampaignDetails(campaignId);
-            result.push({ ...this.transformToMetrics(details), windowDays: window.windowDays });
+            return this.transformToMetrics(details);
           }
-        } else {
-          // Lifetime totals only
-          const details = await this.getCampaignDetails(campaignId);
-          result.push(this.transformToMetrics(details));
-        }
-      }
+        })
+      );
 
       return result;
     } catch (error) {
