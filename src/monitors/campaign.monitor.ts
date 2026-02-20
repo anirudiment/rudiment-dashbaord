@@ -90,101 +90,107 @@ export class CampaignMonitor {
       campaignName: string;
     }> = [];
 
-    // Fetch metrics from all clients and platforms
+    // Fetch metrics from all clients and platforms.
+    // Each client's platform fetches run in parallel (Promise.all) to cut wall-clock time
+    // from (N_platforms × latency) down to max(latency per platform).
     for (const { id: clientId, config } of activeClients) {
       console.log(`\n📌 Processing client: ${config.name} (${clientId})`);
 
-      // Instantly
+      const platformFetches: Array<Promise<CampaignMetrics[]>> = [];
+
+      // --- Instantly ---
       if (config.platforms.instantly?.enabled) {
-        try {
-          console.log('  📧 Fetching Instantly campaigns...');
-          const instantlyService = new InstantlyService(config.platforms.instantly.apiKey);
-          // Filter to active-ish campaigns (Active / Running / Queued)
-          const campaigns = await instantlyService.getCampaigns();
-          const isActiveish = (c: any) => {
-            const s = String((c as any)?.status ?? '').toLowerCase();
-            const n = Number((c as any)?.status);
-            // Observed: numeric 1=Active. Also accept common string statuses.
-            if (Number.isFinite(n) && n === 1) return true;
-            return ['active', 'running', 'queued', 'in_progress', 'in progress'].some(x => s.includes(x));
-          };
-          const activeCampaignIds = campaigns.filter(isActiveish).map((c: any) => String((c as any)?.id ?? c?.campaign_id ?? '')).filter(Boolean);
-          const metrics = await instantlyService.getAllCampaignMetrics(config.name, { activeCampaignIds });
-          
-          for (const metric of metrics) {
-            allMetrics.push({
-              metrics: metric,
-              clientName: config.name,
-              clientId,
-              campaignName: metric.campaignName ?? `Campaign ${metric.campaignId}`
-            });
+        const instantlyApiKey = config.platforms.instantly.apiKey; // capture before async closure
+        platformFetches.push((async () => {
+          try {
+            console.log('  📧 Fetching Instantly campaigns...');
+            const instantlyService = new InstantlyService(instantlyApiKey);
+            const campaigns = await instantlyService.getCampaigns();
+            const isActiveish = (c: any) => {
+              const s = String((c as any)?.status ?? '').toLowerCase();
+              const n = Number((c as any)?.status);
+              if (Number.isFinite(n) && n === 1) return true;
+              return ['active', 'running', 'queued', 'in_progress', 'in progress'].some(x => s.includes(x));
+            };
+            const activeCampaignIds = campaigns.filter(isActiveish).map((c: any) => String((c as any)?.id ?? c?.campaign_id ?? '')).filter(Boolean);
+            const metrics = await instantlyService.getAllCampaignMetrics(config.name, { activeCampaignIds });
+            console.log(`  ✅ Found ${metrics.length} active Instantly campaign(s)`);
+            return metrics;
+          } catch (error) {
+            console.error(`  ❌ Error fetching Instantly campaigns for ${config.name}:`, error);
+            return [];
           }
-          console.log(`  ✅ Found ${metrics.length} active Instantly campaign(s)`);
-        } catch (error) {
-          console.error(`  ❌ Error fetching Instantly campaigns for ${config.name}:`, error);
-        }
+        })());
       }
 
-      // EmailBison
+      // --- EmailBison ---
       if (config.platforms.emailbison?.enabled) {
-        try {
-          console.log('  📧 Fetching EmailBison campaigns...');
-          const emailBisonService = new EmailBisonService(config.platforms.emailbison.apiKey);
-          const metrics = await emailBisonService.getAllCampaignMetrics(config.name);
+        const emailbisonApiKey = config.platforms.emailbison.apiKey; // capture before async closure
+        platformFetches.push((async () => {
+          try {
+            console.log('  📧 Fetching EmailBison campaigns...');
+            const emailBisonService = new EmailBisonService(emailbisonApiKey);
+            const metrics = await emailBisonService.getAllCampaignMetrics(config.name);
 
-          // Digest mode is typically run once/day, so we can afford enrichment calls.
-          // But if EmailBison already returned interestedRate, don't override it.
-          if (this.slackMode === 'digest') {
-            for (const m of metrics) {
-              // Only skip enrichment when the API provided a real/non-zero interestedRate.
-              // In most cases, EmailBison campaign totals do not include Interested, so we enrich.
-              if (typeof m.interestedRate === 'number' && Number.isFinite(m.interestedRate) && m.interestedRate > 0) continue;
-              const id = Number(m.campaignId);
-              if (!Number.isFinite(id)) continue;
-              try {
-                const totals = await emailBisonService.getLifetimeEventTotals(id);
-                const interested = Number(totals['Interested'] ?? 0);
-                const replied = Number(totals['Replied'] ?? m.repliedCount ?? 0);
-                m.interestedCount = interested;
-                m.interestedRate = replied > 0 ? (interested / replied) * 100 : 0;
-              } catch {
-                // ignore enrichment failures
-              }
+            // Digest mode: enrich interestedRate in parallel (F3).
+            // Each getLifetimeEventTotals call is independent — run all at once.
+            if (this.slackMode === 'digest') {
+              const toEnrich = metrics.filter(m => {
+                if (typeof m.interestedRate === 'number' && Number.isFinite(m.interestedRate) && m.interestedRate > 0) return false;
+                return Number.isFinite(Number(m.campaignId));
+              });
+              await Promise.all(
+                toEnrich.map(async m => {
+                  const id = Number(m.campaignId);
+                  try {
+                    const totals = await emailBisonService.getLifetimeEventTotals(id);
+                    const interested = Number(totals['Interested'] ?? 0);
+                    const replied = Number(totals['Replied'] ?? m.repliedCount ?? 0);
+                    m.interestedCount = interested;
+                    m.interestedRate = replied > 0 ? (interested / replied) * 100 : 0;
+                  } catch {
+                    // ignore enrichment failures
+                  }
+                })
+              );
             }
+
+            console.log(`  ✅ Found ${metrics.length} active EmailBison campaign(s)`);
+            return metrics;
+          } catch (error) {
+            console.error(`  ❌ Error fetching EmailBison campaigns for ${config.name}:`, error);
+            return [];
           }
-          
-          for (const metric of metrics) {
-            allMetrics.push({
-              metrics: metric,
-              clientName: config.name,
-              clientId,
-              campaignName: metric.campaignName ?? `Campaign ${metric.campaignId}`
-            });
-          }
-          console.log(`  ✅ Found ${metrics.length} active EmailBison campaign(s)`);
-        } catch (error) {
-          console.error(`  ❌ Error fetching EmailBison campaigns for ${config.name}:`, error);
-        }
+        })());
       }
 
-      // HeyReach
+      // --- HeyReach ---
       if (config.platforms.heyreach?.enabled) {
-        try {
-          console.log('  💼 Fetching HeyReach campaigns...');
-          const heyReachService = new HeyReachService(config.platforms.heyreach.apiKey);
-          const metrics = await heyReachService.getAllCampaignMetrics(config.name);
-          
-          for (const metric of metrics) {
-            allMetrics.push({
-              metrics: metric,
-              clientName: config.name,
-              clientId,
-              campaignName: metric.campaignName ?? `Campaign ${metric.campaignId}`
-            });
+        const heyreachApiKey = config.platforms.heyreach.apiKey; // capture before async closure
+        platformFetches.push((async () => {
+          try {
+            console.log('  💼 Fetching HeyReach campaigns...');
+            const heyReachService = new HeyReachService(heyreachApiKey);
+            const metrics = await heyReachService.getAllCampaignMetrics(config.name);
+            console.log(`  ✅ Found ${metrics.length} active HeyReach campaign(s)`);
+            return metrics;
+          } catch (error) {
+            console.error(`  ❌ Error fetching HeyReach campaigns for ${config.name}:`, error);
+            return [];
           }
-          console.log(`  ✅ Found ${metrics.length} active HeyReach campaign(s)`);
-        } catch (error) {
-          console.error(`  ❌ Error fetching HeyReach campaigns for ${config.name}:`, error);
+        })());
+      }
+
+      // Wait for all platforms in parallel, then collect results.
+      const platformResults = await Promise.all(platformFetches);
+      for (const platformMetrics of platformResults) {
+        for (const metric of platformMetrics) {
+          allMetrics.push({
+            metrics: metric,
+            clientName: config.name,
+            clientId,
+            campaignName: metric.campaignName ?? `Campaign ${metric.campaignId}`
+          });
         }
       }
     }
@@ -309,11 +315,15 @@ export class CampaignMonitor {
 
     console.log(`📌 Processing client: ${config.name} (${clientId})`);
 
-    // Instantly
+    // Fetch all platforms in parallel (same pattern as runMonitoringCheck).
+    const platformFetches: Array<Promise<CampaignMetrics[]>> = [];
+
     if (config.platforms.instantly?.enabled) {
-      try {
-        console.log('  📧 Fetching Instantly campaigns...');
-        const instantlyService = new InstantlyService(config.platforms.instantly.apiKey);
+      const instantlyApiKey = config.platforms.instantly.apiKey; // capture before async closure
+      platformFetches.push((async () => {
+        try {
+          console.log('  📧 Fetching Instantly campaigns...');
+          const instantlyService = new InstantlyService(instantlyApiKey);
           const campaigns = await instantlyService.getCampaigns();
           const isActiveish = (c: any) => {
             const s = String((c as any)?.status ?? '').toLowerCase();
@@ -323,77 +333,78 @@ export class CampaignMonitor {
           };
           const activeCampaignIds = campaigns.filter(isActiveish).map((c: any) => String((c as any)?.id ?? c?.campaign_id ?? '')).filter(Boolean);
           const metrics = await instantlyService.getAllCampaignMetrics(config.name, { activeCampaignIds });
-
-        for (const metric of metrics) {
-          allMetrics.push({
-            metrics: metric,
-            clientName: config.name,
-            clientId,
-            campaignName: metric.campaignName ?? `Campaign ${metric.campaignId}`
-          });
+          console.log(`  ✅ Found ${metrics.length} active Instantly campaign(s)`);
+          return metrics;
+        } catch (error) {
+          console.error(`  ❌ Error fetching Instantly campaigns for ${config.name}:`, error);
+          return [];
         }
-        console.log(`  ✅ Found ${metrics.length} active Instantly campaign(s)`);
-      } catch (error) {
-        console.error(`  ❌ Error fetching Instantly campaigns for ${config.name}:`, error);
-      }
+      })());
     }
 
-    // EmailBison
     if (config.platforms.emailbison?.enabled) {
-      try {
-        console.log('  📧 Fetching EmailBison campaigns...');
-        const emailBisonService = new EmailBisonService(config.platforms.emailbison.apiKey);
+      const emailbisonApiKey = config.platforms.emailbison.apiKey; // capture before async closure
+      platformFetches.push((async () => {
+        try {
+          console.log('  📧 Fetching EmailBison campaigns...');
+          const emailBisonService = new EmailBisonService(emailbisonApiKey);
           const metrics = await emailBisonService.getAllCampaignMetrics(config.name);
 
           if (this.slackMode === 'digest') {
-            for (const m of metrics) {
-              if (typeof m.interestedRate === 'number' && Number.isFinite(m.interestedRate) && m.interestedRate > 0) continue;
-              const id = Number(m.campaignId);
-              if (!Number.isFinite(id)) continue;
-              try {
-                const totals = await emailBisonService.getLifetimeEventTotals(id);
-                const interested = Number(totals['Interested'] ?? 0);
-                const replied = Number(totals['Replied'] ?? m.repliedCount ?? 0);
-                m.interestedCount = interested;
-                m.interestedRate = replied > 0 ? (interested / replied) * 100 : 0;
-              } catch {
-                // ignore enrichment failures
-              }
-            }
+            const toEnrich = metrics.filter(m => {
+              if (typeof m.interestedRate === 'number' && Number.isFinite(m.interestedRate) && m.interestedRate > 0) return false;
+              return Number.isFinite(Number(m.campaignId));
+            });
+            await Promise.all(
+              toEnrich.map(async m => {
+                const id = Number(m.campaignId);
+                try {
+                  const totals = await emailBisonService.getLifetimeEventTotals(id);
+                  const interested = Number(totals['Interested'] ?? 0);
+                  const replied = Number(totals['Replied'] ?? m.repliedCount ?? 0);
+                  m.interestedCount = interested;
+                  m.interestedRate = replied > 0 ? (interested / replied) * 100 : 0;
+                } catch {
+                  // ignore enrichment failures
+                }
+              })
+            );
           }
 
-        for (const metric of metrics) {
-          allMetrics.push({
-            metrics: metric,
-            clientName: config.name,
-            clientId,
-            campaignName: metric.campaignName ?? `Campaign ${metric.campaignId}`
-          });
+          console.log(`  ✅ Found ${metrics.length} active EmailBison campaign(s)`);
+          return metrics;
+        } catch (error) {
+          console.error(`  ❌ Error fetching EmailBison campaigns for ${config.name}:`, error);
+          return [];
         }
-        console.log(`  ✅ Found ${metrics.length} active EmailBison campaign(s)`);
-      } catch (error) {
-        console.error(`  ❌ Error fetching EmailBison campaigns for ${config.name}:`, error);
-      }
+      })());
     }
 
-    // HeyReach
     if (config.platforms.heyreach?.enabled) {
-      try {
-        console.log('  💼 Fetching HeyReach campaigns...');
-        const heyReachService = new HeyReachService(config.platforms.heyreach.apiKey);
-        const metrics = await heyReachService.getAllCampaignMetrics(config.name);
-
-        for (const metric of metrics) {
-          allMetrics.push({
-            metrics: metric,
-            clientName: config.name,
-            clientId,
-            campaignName: metric.campaignName ?? `Campaign ${metric.campaignId}`
-          });
+      const heyreachApiKey = config.platforms.heyreach.apiKey; // capture before async closure
+      platformFetches.push((async () => {
+        try {
+          console.log('  💼 Fetching HeyReach campaigns...');
+          const heyReachService = new HeyReachService(heyreachApiKey);
+          const metrics = await heyReachService.getAllCampaignMetrics(config.name);
+          console.log(`  ✅ Found ${metrics.length} active HeyReach campaign(s)`);
+          return metrics;
+        } catch (error) {
+          console.error(`  ❌ Error fetching HeyReach campaigns for ${config.name}:`, error);
+          return [];
         }
-        console.log(`  ✅ Found ${metrics.length} active HeyReach campaign(s)`);
-      } catch (error) {
-        console.error(`  ❌ Error fetching HeyReach campaigns for ${config.name}:`, error);
+      })());
+    }
+
+    const platformResults = await Promise.all(platformFetches);
+    for (const platformMetrics of platformResults) {
+      for (const metric of platformMetrics) {
+        allMetrics.push({
+          metrics: metric,
+          clientName: config.name,
+          clientId,
+          campaignName: metric.campaignName ?? `Campaign ${metric.campaignId}`
+        });
       }
     }
 

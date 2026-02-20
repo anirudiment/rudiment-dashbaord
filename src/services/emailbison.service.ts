@@ -53,19 +53,48 @@ export class EmailBisonService {
   }
 
   /**
-   * List campaigns (Send API)
-   * Confirmed working via auth probe:
-   *   GET /api/campaigns -> 200 { data: [...] }
+   * List campaigns (Send API) — paginates through all pages.
+   *
+   * The API uses page-based pagination (?page=N) with a server-enforced page
+   * size (15 by default). The response envelope includes:
+   *   { data: [...], links: { next: string|null }, meta: { last_page: number } }
+   *
+   * We follow links.next until null (or meta.current_page >= meta.last_page)
+   * so clients with more than 15 campaigns are fetched in full.
    */
   async getCampaigns(): Promise<any[]> {
     try {
-      const response = await this.client.get('/api/campaigns');
+      const all: any[] = [];
+      let page = 1;
+      const maxPages = 200; // safety cap
 
-      const data = response.data;
-      if (Array.isArray(data)) return data;
-      if (Array.isArray(data?.campaigns)) return data.campaigns;
-      if (Array.isArray(data?.data)) return data.data;
-      return [];
+      while (page <= maxPages) {
+        const response = await this.client.get('/api/campaigns', { params: { page } });
+        const body = response.data;
+
+        // Accumulate the page's rows
+        const rows: any[] = Array.isArray(body?.data)
+          ? body.data
+          : Array.isArray(body?.campaigns)
+            ? body.campaigns
+            : Array.isArray(body)
+              ? body
+              : [];
+
+        all.push(...rows);
+
+        if (!rows.length) break;
+
+        // Stop when the API signals no next page
+        const hasNext = body?.links?.next != null && body.links.next !== '';
+        const currentPage = Number(body?.meta?.current_page ?? page);
+        const lastPage = Number(body?.meta?.last_page ?? 1);
+
+        if (!hasNext || currentPage >= lastPage) break;
+        page += 1;
+      }
+
+      return all;
     } catch (error) {
       console.error('Error fetching EmailBison/SEND campaigns:', this.summarizeAxiosError(error));
       throw error;
@@ -352,44 +381,46 @@ export class EmailBisonService {
 
       const campaignIds = filtered.map(c => Number(c?.id)).filter(n => Number.isFinite(n));
 
-      const result: CampaignMetrics[] = [];
+      // Fetch all campaign details in parallel. Each fetch is independent, so Promise.all
+      // cuts wall-clock time from (N campaigns × latency) to ~1 latency.
+      const result = await Promise.all(
+        campaignIds.map(async campaignId => {
+          // If a window is provided, prefer campaign details with start_date/end_date.
+          // This matches the platform UI more closely (e.g. it includes unique_replies and
+          // total_leads_contacted for that period). Falling back to event-stats sums can
+          // drift vs UI because it may represent *total replies* rather than *unique replies*.
+          if (window?.startDate && window?.endDate) {
+            try {
+              const details = await this.getCampaignDetails(campaignId, { startDate: window.startDate, endDate: window.endDate });
 
-      for (const campaignId of campaignIds) {
-        // If a window is provided, prefer campaign details with start_date/end_date.
-        // This matches the platform UI more closely (e.g. it includes unique_replies and
-        // total_leads_contacted for that period). Falling back to event-stats sums can
-        // drift vs UI because it may represent *total replies* rather than *unique replies*.
-        if (window?.startDate && window?.endDate) {
-          try {
-            const details = await this.getCampaignDetails(campaignId, { startDate: window.startDate, endDate: window.endDate });
+              const sent = Number(details?.emails_sent ?? 0);
+              const bounced = Number(details?.bounced ?? 0);
+              const uniqueReplies = Number(details?.unique_replies ?? 0);
+              const opened = Number(details?.unique_opens ?? details?.opened ?? 0);
+              const interested = Number(details?.interested ?? 0);
 
-            const sent = Number(details?.emails_sent ?? 0);
-            const bounced = Number(details?.bounced ?? 0);
-            const uniqueReplies = Number(details?.unique_replies ?? 0);
-            const opened = Number(details?.unique_opens ?? details?.opened ?? 0);
-            const interested = Number(details?.interested ?? 0);
-
-            result.push({
-              ...this.transformToMetrics(details, {
-                sent,
-                bounced,
-                replied: uniqueReplies,
-                opened,
-                interested
-              }),
-              windowDays: window.windowDays
-            });
-          } catch {
-            // fallback to lifetime details
+              return {
+                ...this.transformToMetrics(details, {
+                  sent,
+                  bounced,
+                  replied: uniqueReplies,
+                  opened,
+                  interested
+                }),
+                windowDays: window.windowDays
+              } as CampaignMetrics;
+            } catch {
+              // fallback to lifetime details
+              const details = await this.getCampaignDetails(campaignId);
+              return { ...this.transformToMetrics(details), windowDays: window.windowDays } as CampaignMetrics;
+            }
+          } else {
+            // Lifetime totals only
             const details = await this.getCampaignDetails(campaignId);
-            result.push({ ...this.transformToMetrics(details), windowDays: window.windowDays });
+            return this.transformToMetrics(details);
           }
-        } else {
-          // Lifetime totals only
-          const details = await this.getCampaignDetails(campaignId);
-          result.push(this.transformToMetrics(details));
-        }
-      }
+        })
+      );
 
       return result;
     } catch (error) {
