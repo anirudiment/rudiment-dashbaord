@@ -53,19 +53,48 @@ export class EmailBisonService {
   }
 
   /**
-   * List campaigns (Send API)
-   * Confirmed working via auth probe:
-   *   GET /api/campaigns -> 200 { data: [...] }
+   * List campaigns (Send API) — paginates through all pages.
+   *
+   * The API uses page-based pagination (?page=N) with a server-enforced page
+   * size (15 by default). The response envelope includes:
+   *   { data: [...], links: { next: string|null }, meta: { last_page: number } }
+   *
+   * We follow links.next until null (or meta.current_page >= meta.last_page)
+   * so clients with more than 15 campaigns are fetched in full.
    */
   async getCampaigns(): Promise<any[]> {
     try {
-      const response = await this.client.get('/api/campaigns');
+      const all: any[] = [];
+      let page = 1;
+      const maxPages = 200; // safety cap
 
-      const data = response.data;
-      if (Array.isArray(data)) return data;
-      if (Array.isArray(data?.campaigns)) return data.campaigns;
-      if (Array.isArray(data?.data)) return data.data;
-      return [];
+      while (page <= maxPages) {
+        const response = await this.client.get('/api/campaigns', { params: { page } });
+        const body = response.data;
+
+        // Accumulate the page's rows
+        const rows: any[] = Array.isArray(body?.data)
+          ? body.data
+          : Array.isArray(body?.campaigns)
+            ? body.campaigns
+            : Array.isArray(body)
+              ? body
+              : [];
+
+        all.push(...rows);
+
+        if (!rows.length) break;
+
+        // Stop when the API signals no next page
+        const hasNext = body?.links?.next != null && body.links.next !== '';
+        const currentPage = Number(body?.meta?.current_page ?? page);
+        const lastPage = Number(body?.meta?.last_page ?? 1);
+
+        if (!hasNext || currentPage >= lastPage) break;
+        page += 1;
+      }
+
+      return all;
     } catch (error) {
       console.error('Error fetching EmailBison/SEND campaigns:', this.summarizeAxiosError(error));
       throw error;
