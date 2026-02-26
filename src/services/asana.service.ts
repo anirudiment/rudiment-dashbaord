@@ -84,6 +84,102 @@ export class AsanaService {
   }
 
   /**
+   * Get open tasks for a specific client by project GID.
+   * Returns incomplete tasks + optionally tasks completed in the last N days.
+   */
+  async getTasksByProject(params: {
+    projectGid: string;
+    includeCompleted?: boolean;
+    completedDaysBack?: number;
+  }): Promise<{ open: AsanaTask[]; recentlyCompleted: AsanaTask[] }> {
+    const open = await this.searchTasks({
+      'projects.any': params.projectGid,
+      completed: false,
+    });
+
+    let recentlyCompleted: AsanaTask[] = [];
+    if (params.includeCompleted !== false) {
+      const daysBack = params.completedDaysBack ?? 7;
+      const since = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
+      recentlyCompleted = await this.searchTasks({
+        'projects.any': params.projectGid,
+        completed: true,
+        'completed_at.after': since.toISOString(),
+      });
+    }
+
+    return { open, recentlyCompleted };
+  }
+
+  /**
+   * Create a new task in Asana.
+   *
+   * @returns The created task GID and URL.
+   */
+  async createTask(params: {
+    name: string;
+    projectGid: string;
+    notes?: string;
+    dueOn?: string;           // YYYY-MM-DD
+    assigneeGid?: string;     // Asana user GID
+    assigneeEmail?: string;   // Alternative to GID — Asana resolves by email
+    customFields?: Record<string, string>; // GID → value
+  }): Promise<{ gid: string; url: string; name: string }> {
+    const workspace = process.env.ASANA_WORKSPACE_GID?.trim();
+    if (!workspace) throw new Error('ASANA_WORKSPACE_GID is required');
+
+    const body: Record<string, any> = {
+      data: {
+        name: params.name,
+        projects: [params.projectGid],
+        workspace,
+        ...(params.notes ? { notes: params.notes } : {}),
+        ...(params.dueOn ? { due_on: params.dueOn } : {}),
+        ...(params.assigneeGid ? { assignee: params.assigneeGid } : {}),
+        ...(params.assigneeEmail ? { assignee: params.assigneeEmail } : {}),
+        ...(params.customFields ? { custom_fields: params.customFields } : {}),
+      },
+    };
+
+    const res = await this.client.post('/tasks', body);
+    const task = res.data?.data;
+
+    return {
+      gid: task.gid,
+      name: task.name,
+      url: `https://app.asana.com/0/${params.projectGid}/${task.gid}`,
+    };
+  }
+
+  /**
+   * Format tasks as a readable text block for including in context.
+   */
+  static formatTasksAsText(open: AsanaTask[], recentlyCompleted: AsanaTask[]): string {
+    const fmt = (t: AsanaTask) => {
+      const parts = [`- ${t.name}`];
+      if (t.due_on) parts.push(`(due ${t.due_on})`);
+      if (t.assignee?.name) parts.push(`→ ${t.assignee.name}`);
+      return parts.join(' ');
+    };
+
+    const lines: string[] = [];
+
+    if (open.length > 0) {
+      lines.push('### Open Tasks');
+      lines.push(...open.map(fmt));
+    } else {
+      lines.push('### Open Tasks\n(none)');
+    }
+
+    if (recentlyCompleted.length > 0) {
+      lines.push('\n### Recently Completed');
+      lines.push(...recentlyCompleted.map(fmt));
+    }
+
+    return lines.join('\n') || 'No tasks found.';
+  }
+
+  /**
    * Returns per-account summaries for:
    * - completed tasks in last 7 days
    * - planned tasks this week (due_on within the current week)

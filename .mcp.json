@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "rudiment-context": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["tsx", "${workspaceFolder}/src/mcp-server.ts"],
+      "env": {
+        "NODE_ENV": "development"
+      }
+    }
+  }
+}
