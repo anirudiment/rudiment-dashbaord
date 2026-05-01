@@ -265,6 +265,17 @@ export const clients: Record<string, ClientConfig> = {
         enabled: isRealKey(process.env.CLIENT9_CLAY_KEY)
       }
     }
+  },
+
+  // CLIENT 10
+  'client10': {
+    name: 'Kajae',
+    platforms: {
+      emailbison: {
+        apiKey: process.env.CLIENT10_EMAILBISON_KEY || '',
+        enabled: isRealKey(process.env.CLIENT10_EMAILBISON_KEY)
+      }
+    }
   }
 };
 
